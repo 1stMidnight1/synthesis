@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/engine", "crates/app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+synthesis-engine = { path = "crates/engine" }
+eframe = "0.37"
+cpal = "0.18"
+# Added as milestones need them: hound 3.5 (M1), rustfft 6.4 (M1 tests),
+# serde/serde_json 1 (M7), directories 6 (M7).
+
+[profile.dev.package."*"]
+# Dependencies optimized even in debug so audio/UI stay usable while iterating.
+opt-level = 2
