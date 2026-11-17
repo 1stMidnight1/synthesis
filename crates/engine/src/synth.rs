@@ -30,6 +30,7 @@
 
 use std::f64::consts::{PI, TAU};
 
+use crate::branch::{self, Branch};
 use crate::geometry::Segment;
 use crate::micro::{DepthUnit, shift_hz};
 use crate::model::{PhasePolicy, Settings, Voice};
@@ -98,13 +99,19 @@ pub struct VoiceSynth {
     sr: f64,
     a4_hz: f64,
     ramp_step: f64,
+    /// Gate ramp for curve branches (differs only for `CurveSound::LongFade`).
+    branch_ramp_step: f64,
     control_samples: usize,
     burst_s: f64,
     amp_band: f64,
-    // Outline tones: one per non-vertical edge of every shape.
+    // Outline tones: one per non-vertical edge of every straight shape.
     tone_segs: Vec<Segment>,
     tone_osc: Vec<SineOsc>,
     tone_gain: Vec<f64>,
+    // Curve branches: one continuous oscillator each (see branch.rs).
+    curve_branches: Vec<Branch>,
+    branch_osc: Vec<SineOsc>,
+    branch_gain: Vec<f64>,
     // Lattice bands.
     lat_st: Vec<f64>,
     lat_hz: Vec<f64>,
@@ -122,8 +129,21 @@ impl VoiceSynth {
         let sr = f64::from(settings.sample_rate);
         let ramp_samples = (settings.ramp_ms * 1e-3 * sr).max(1.0);
 
+        // Straight edges (lines, polylines, polygons, rectangles) keep their
+        // exact segments. Curves (circles, ellipses) become analytic branches:
+        // one continuous oscillator per branch, with no vertices (branch.rs).
         let mut tone_segs = Vec::new();
+        let mut curve_branches = Vec::new();
+        let curve_sound = voice.curve_sound;
         for shape in &voice.shapes {
+            if let Some(branches) = branch::branches(&shape.geometry) {
+                curve_branches.extend(
+                    branches
+                        .into_iter()
+                        .filter(|b| curve_sound.selects(b.is_upper())),
+                );
+                continue;
+            }
             for seg in shape.edges() {
                 if !is_vertical(&seg) {
                     tone_segs.push(seg);
@@ -131,6 +151,10 @@ impl VoiceSynth {
             }
         }
         let tone_count = tone_segs.len();
+        let branch_count = curve_branches.len();
+        let branch_ramp_samples = curve_sound
+            .fade_ms()
+            .map_or(ramp_samples, |ms| (ms * 1e-3 * sr).max(1.0));
 
         // Lattice from AUDIBLE_MIN_HZ up, spaced by density in cents.
         let step = settings.density_cents / 100.0;
@@ -160,12 +184,16 @@ impl VoiceSynth {
             sr,
             a4_hz: settings.a4_hz,
             ramp_step: 1.0 / ramp_samples,
+            branch_ramp_step: 1.0 / branch_ramp_samples,
             control_samples: ((CONTROL_S * sr).round() as usize).max(1),
             burst_s: settings.vertical_window_ms * 1e-3,
             amp_band: BAND_GAIN * (settings.density_cents / 100.0).sqrt(),
             tone_segs,
             tone_osc: vec![SineOsc::default(); tone_count],
             tone_gain: vec![0.0; tone_count],
+            curve_branches,
+            branch_osc: vec![SineOsc::default(); branch_count],
+            branch_gain: vec![0.0; branch_count],
             lat_st,
             lat_hz,
             lat_osc,
@@ -222,6 +250,22 @@ impl VoiceSynth {
                 let macro_hz = st_to_hz(st_at(&seg, t), self.a4_hz);
                 let f = shift_hz(macro_hz, offset, unit).max(0.0);
                 out += TONE_GAIN * g * self.tone_osc[k].next(f, self.sr);
+            }
+        }
+
+        // Curve branches: the pitch follows the curve continuously. The gate
+        // ramps only at the branch's time ends, where the curve turns back.
+        for k in 0..self.curve_branches.len() {
+            let br = self.curve_branches[k];
+            let inside = t >= br.t0 && t <= br.t1;
+            let target = if inside { 1.0 } else { 0.0 };
+            let g = ramp_toward(self.branch_gain[k], target, self.branch_ramp_step);
+            self.branch_gain[k] = g;
+            if g > 0.0 {
+                let (st, _) = br.at(t.clamp(br.t0, br.t1));
+                let macro_hz = st_to_hz(st, self.a4_hz);
+                let f = shift_hz(macro_hz, offset, unit).max(0.0);
+                out += TONE_GAIN * g * self.branch_osc[k].next(f, self.sr);
             }
         }
 

@@ -3,6 +3,7 @@
 //! Micro shape, volume lanes, and envelopes arrive in M2 and M5. This model
 //! holds only what M1 renders: shapes per voice, a mute flag, and settings.
 
+use crate::branch::CurveSound;
 use crate::error::{EngineError, Result};
 use crate::geometry::Shape;
 use crate::lanes::Lane;
@@ -94,6 +95,8 @@ pub struct Voice {
     /// Micro transform shared by all of this voice's shapes (R4, MICRO-06).
     /// `None` means no micro transform.
     pub micro: Option<Micro>,
+    /// How curved outlines (circles, ellipses, arcs) sound. See `CurveSound`.
+    pub curve_sound: CurveSound,
     /// Left and right volume lanes (R5, R6). An empty lane is constant 100%.
     pub lane_left: Lane,
     pub lane_right: Lane,
