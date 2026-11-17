@@ -1,10 +1,14 @@
-//! Offline stereo render (ENGINE-01, R6, R7).
+//! Offline stereo render (ENGINE-01, R5 to R7).
+//!
+//! Each voice produces one mono signal from its shapes and micro. Left and
+//! right then differ only by their lane gains (R6). Voices sum linearly (R7),
+//! and master gain applies after the sum.
 
 use crate::error::Result;
 use crate::model::Scene;
 use crate::synth::VoiceSynth;
 
-/// A rendered stereo buffer. Left and right carry identical partials (R6).
+/// A rendered stereo buffer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rendered {
     pub sample_rate: u32,
@@ -24,12 +28,12 @@ impl Rendered {
 
 /// Render a scene offline at its settings' sample rate.
 ///
-/// Voices sum linearly (R7). Muted voices are skipped. Master gain is applied
-/// after the sum. Output is not clipped here; integer export clamps.
+/// Muted voices are skipped. Output is not clipped here; integer export clamps.
 pub fn render_scene(scene: &Scene) -> Result<Rendered> {
     scene.validate()?;
     let sr = scene.settings.sample_rate;
-    let n = (scene.duration_s * f64::from(sr)).ceil() as usize;
+    let sr_f = f64::from(sr);
+    let n = (scene.duration_s * sr_f).ceil() as usize;
     let mut left = vec![0.0f64; n];
     let mut right = vec![0.0f64; n];
 
@@ -37,8 +41,9 @@ pub fn render_scene(scene: &Scene) -> Result<Rendered> {
         let mut synth = VoiceSynth::new(voice, &scene.settings);
         for i in 0..n {
             let s = synth.process(i);
-            left[i] += s;
-            right[i] += s;
+            let t = i as f64 / sr_f;
+            left[i] += s * voice.lane_left.gain_at(t);
+            right[i] += s * voice.lane_right.gain_at(t);
         }
     }
 

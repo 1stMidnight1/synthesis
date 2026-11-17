@@ -12,6 +12,8 @@
 pub mod error;
 pub mod export;
 pub mod geometry;
+pub mod lanes;
+pub mod micro;
 pub mod model;
 pub mod osc;
 pub mod pitch;
@@ -22,5 +24,7 @@ pub mod synth;
 pub use error::{EngineError, Result};
 pub use export::{BitDepth, write_wav, write_wav_file};
 pub use geometry::{Geometry, Point, Segment, Shape};
+pub use lanes::{Lane, LanePoint, Stroke};
+pub use micro::{DepthUnit, Micro, Preset};
 pub use model::{PhasePolicy, Scene, Settings, Voice};
 pub use render::{Rendered, render_scene};
