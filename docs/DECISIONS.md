@@ -130,12 +130,18 @@ All set to the plan's listed default, status **default** (change any by telling 
 - **Canvas.** Pan (middle-drag), zoom (wheel), and shape tools for line, polyline, rectangle, circle, ellipse, arc, polygon, select, delete. Fill mode for new closed shapes (CANVAS-03). Fill is drawn as a tint over the bounding box for now; exact fill rendering is a later polish item.
 - **Export.** WAV from the UI through `rfd` native save dialog, 24-bit, rendered through the same engine path.
 
+**Added in M3 round 2 (2026-11-17):**
+- **Select, move, resize (CANVAS-07).** Engine `transform` module: `translate` and `scale` about an anchor, with separate time and pitch factors (radii scale per axis). Results are validated and rejected if invalid. In the app, a click selects the topmost shape. Dragging a corner handle resizes about the opposite corner. Dragging the body moves it. A live preview shows the in-progress shape, and the change commits on release as one undo step. Escape cancels. The preview and the commit use the same `drag_result` function, so they agree.
+- **Loop region (TRANS-02).** A user loop stored in the document (undoable), set on the time ruler by shift-dragging. It is clamped to the timeline and has a minimum length. Loop playback wraps inside it. Clear loop removes it. With no region set, loop uses the full timeline, as before.
+- **Time ruler (TRANS-01).** Click or drag to scrub. A running playback restarts from the new position.
+
 **Known gaps in M3 (not hidden):**
 - Fill (CANVAS-03): the Fill tool toggles the closed shape under the click (even-odd inside test). The "fill new shapes" checkbox sets the default for new shapes. Implemented.
 - Loop region (TRANS-02) is a loop-to-duration toggle, not a user-set range.
 - Time is shown in seconds and bars/beats (TRANS-03). The loop and export range picker (OUT-04) are not implemented.
 - Fill is drawn as a bounding-box tint, not a true filled-region shape. This is display-only; the engine renders true bands (R1).
-- Select/move/resize (CANVAS-07) and a user-set loop range (TRANS-02) are open. Until they are done, the M3 acceptance sentence is only partly met.
+- Select drag is tested at the geometry level (move, resize, anchor, rejection, pick). Pointer-level behaviour in the running window is not automated and needs a manual check.
+- The loop region is not saved to a project yet (PROJ-03 is M7).
 
 ## M3 test results (2026-11-17, macOS arm64)
 
