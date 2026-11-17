@@ -1,31 +1,37 @@
-//! Per-voice synthesis (ENGINE-02 to ENGINE-05, ENGINE-07).
+//! Per-voice synthesis (ENGINE-02 to ENGINE-05, ENGINE-07, R4).
 //!
 //! Two kinds of oscillator, chosen so that each acceptance test is met exactly
 //! rather than approximately (see docs/DECISIONS.md, "M1 engine design"):
 //!
 //! - **Outline tones.** Each non-vertical edge owns one `SineOsc` whose
-//!   frequency follows the edge's pitch at the current time. A flat 450 Hz line
-//!   therefore sounds exactly 450 Hz, with no 5-cent quantization. The gate
-//!   ramps on and off over `ramp_ms` (ENGINE-05).
+//!   frequency follows the edge's pitch at each sample. A flat 450 Hz line
+//!   therefore sounds exactly 450 Hz, with no 5-cent quantization.
 //! - **Lattice bands.** Filled regions and vertical-edge bursts use a fixed
-//!   log-spaced lattice (ENGINE-02) with persistent phases (ENGINE-04). A
-//!   lattice oscillator is on when its pitch lies in an active band. Its gain
-//!   ramps over `ramp_ms` (ENGINE-05).
+//!   log-spaced lattice (ENGINE-02). A lattice oscillator is gated on when its
+//!   macro pitch lies in an active band.
 //!
-//! Gating for the lattice is evaluated once per control frame (1 ms, PLAN §5.1),
-//! so a burst or band edge can start up to one frame late.
+//! Micro (R4, M2): every sounding frequency is shifted by the voice's micro
+//! offset, evaluated per sample. Gating always uses the macro pitch, and only
+//! the sound uses the shifted frequency.
 //!
-//! Level: each lattice oscillator has amplitude `BAND_GAIN * sqrt(d / 100)`
-//! for density `d` cents (ENGINE-07). Power per semitone of band is then
-//! independent of density.
+//! Phase (M2): every oscillator is a phase accumulator. Its phase advances only
+//! while it is audible, so a moving or micro-shifted frequency stays continuous
+//! and a re-gated oscillator resumes at its previous phase (ENGINE-05).
 //!
-//! Not real-time safe in this form: the lattice is evaluated per sample with
-//! allocation at control rate. That is fine for offline rendering (M1). The
-//! audio thread will use prepared buffers (PLAT, PLUG-05) in a later milestone.
+//! Gating for the lattice is evaluated once per 1 ms control frame (PLAN §5.1).
+//! Gains ramp linearly over `ramp_ms` (ENGINE-05).
+//!
+//! Level: each lattice oscillator has amplitude `BAND_GAIN * sqrt(d / 100)` for
+//! density `d` cents (ENGINE-07).
+//!
+//! Real-time safety: the lattice is evaluated per sample, and gating allocates
+//! at control rate. That is fine offline (M1–M2). Live playback will need
+//! prepared buffers (AGENTS rule 3, PLUG-05), added in a later milestone.
 
 use std::f64::consts::{PI, TAU};
 
 use crate::geometry::Segment;
+use crate::micro::{DepthUnit, shift_hz};
 use crate::model::{PhasePolicy, Settings, Voice};
 use crate::osc::SineOsc;
 use crate::pitch::{AUDIBLE_MAX_HZ, AUDIBLE_MIN_HZ, hz_to_st, st_to_hz};
@@ -81,7 +87,7 @@ fn ramp_toward(gain: f64, target: f64, step: f64) -> f64 {
     }
 }
 
-/// Synth state for one voice.
+/// Synth state for one voice. Produces a mono sample; L/R gains are applied by the renderer (R6).
 pub struct VoiceSynth<'a> {
     voice: &'a Voice,
     sr: f64,
@@ -96,8 +102,8 @@ pub struct VoiceSynth<'a> {
     tone_gain: Vec<f64>,
     // Lattice bands.
     lat_st: Vec<f64>,
-    lat_freq: Vec<f64>,
-    lat_phase: Vec<f64>,
+    lat_hz: Vec<f64>,
+    lat_osc: Vec<SineOsc>,
     lat_gain: Vec<f64>,
     lat_target: Vec<f64>,
 }
@@ -133,12 +139,12 @@ impl<'a> VoiceSynth<'a> {
             k += 1;
         }
         let n = lat_st.len();
-        let lat_freq: Vec<f64> = lat_st
+        let lat_hz: Vec<f64> = lat_st
             .iter()
             .map(|&st| st_to_hz(st, settings.a4_hz))
             .collect();
-        let lat_phase: Vec<f64> = (0..n)
-            .map(|i| lattice_phase(settings.phase_policy, i, n))
+        let lat_osc: Vec<SineOsc> = (0..n)
+            .map(|i| SineOsc::new(lattice_phase(settings.phase_policy, i, n)))
             .collect();
 
         Self {
@@ -153,8 +159,8 @@ impl<'a> VoiceSynth<'a> {
             tone_osc: vec![SineOsc::default(); tone_count],
             tone_gain: vec![0.0; tone_count],
             lat_st,
-            lat_freq,
-            lat_phase,
+            lat_hz,
+            lat_osc,
             lat_gain: vec![0.0; n],
             lat_target: vec![0.0; n],
         }
@@ -181,27 +187,34 @@ impl<'a> VoiceSynth<'a> {
             self.update_lattice_targets(t);
         }
 
+        // Micro offset for this sample (R4). No micro means a zero offset.
+        let (offset, unit) = match &self.voice.micro {
+            Some(m) => (m.offset_at(t), m.depth_unit),
+            None => (0.0, DepthUnit::Semitones),
+        };
+
         let mut out = 0.0;
 
-        // Outline tones: exact frequency, follows the edge's pitch.
+        // Outline tones: exact macro pitch, then the micro shift.
         for k in 0..self.tone_segs.len() {
             let seg = self.tone_segs[k];
             let target = if spans(&seg, t) { 1.0 } else { 0.0 };
             let g = ramp_toward(self.tone_gain[k], target, self.ramp_step);
             self.tone_gain[k] = g;
             if g > 0.0 {
-                let f = st_to_hz(st_at(&seg, t), self.a4_hz);
+                let macro_hz = st_to_hz(st_at(&seg, t), self.a4_hz);
+                let f = shift_hz(macro_hz, offset, unit).max(0.0);
                 out += TONE_GAIN * g * self.tone_osc[k].next(f, self.sr);
             }
         }
 
-        // Lattice bands: persistent phase, sample-accurate analytic phase.
+        // Lattice bands: gated on macro pitch, sounding at the shifted frequency.
         for i in 0..self.lat_st.len() {
             let g = ramp_toward(self.lat_gain[i], self.lat_target[i], self.ramp_step);
             self.lat_gain[i] = g;
             if g > 0.0 {
-                let cycles = (self.lat_freq[i] * n as f64 / self.sr).fract();
-                out += self.amp_band * g * (TAU * cycles + self.lat_phase[i]).sin();
+                let f = shift_hz(self.lat_hz[i], offset, unit).max(0.0);
+                out += self.amp_band * g * self.lat_osc[i].next(f, self.sr);
             }
         }
 

@@ -5,6 +5,8 @@
 
 use crate::error::{EngineError, Result};
 use crate::geometry::Shape;
+use crate::lanes::Lane;
+use crate::micro::Micro;
 
 /// Maximum project length (R10, D-14).
 pub const MAX_DURATION_S: f64 = 60.0;
@@ -83,11 +85,18 @@ impl Settings {
     }
 }
 
-/// One instrument: a set of macro shapes plus a mute flag.
+/// One instrument: macro shapes, an optional micro transform, volume lanes,
+/// and a mute flag.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Voice {
     pub name: String,
     pub shapes: Vec<Shape>,
+    /// Micro transform shared by all of this voice's shapes (R4, MICRO-06).
+    /// `None` means no micro transform.
+    pub micro: Option<Micro>,
+    /// Left and right volume lanes (R5, R6). An empty lane is constant 100%.
+    pub lane_left: Lane,
+    pub lane_right: Lane,
     pub muted: bool,
 }
 
@@ -95,13 +104,17 @@ impl Voice {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            shapes: Vec::new(),
-            muted: false,
+            ..Self::default()
         }
     }
 
     pub fn with_shape(mut self, shape: Shape) -> Self {
         self.shapes.push(shape);
+        self
+    }
+
+    pub fn with_micro(mut self, micro: Micro) -> Self {
+        self.micro = Some(micro);
         self
     }
 }
@@ -141,6 +154,11 @@ impl Scene {
             for shape in &voice.shapes {
                 shape.validate()?;
             }
+            if let Some(micro) = &voice.micro {
+                micro.validate()?;
+            }
+            voice.lane_left.validate()?;
+            voice.lane_right.validate()?;
         }
         Ok(())
     }

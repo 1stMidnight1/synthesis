@@ -99,6 +99,26 @@ All set to the plan's listed default, status **default** (change any by telling 
 - `cargo check -p synthesis-engine --target x86_64-pc-windows-msvc`: pass.
 - `cargo check -p synthesis-app --target x86_64-pc-windows-msvc`: pass.
 
+## M2 engine design (2026-11-17)
+
+- **Micro (R4).** Per voice as `Option<Micro>`. Phase is `frac(t / (period * period_scale))`, locked to the timeline. Offset is `depth * depth_scale * micro(phase)`. Depth defaults to semitones with a Hz toggle (D-4). Depth and period scales are separate (D-5). The micro shifts the sounding frequency only. Gating still uses the macro pitch (D-18).
+- **Micro shape.** Points on phase 0..1 with values -1..+1, linearly interpolated with wrap-around, so no per-sample stepping and no restart per shape. Presets (sine, triangle, saw, square) are plain point lists, so they stay editable (MICRO-02).
+- **Phase accumulators (M2 change).** M1 computed lattice phase from absolute time, which can't follow a moving or micro-shifted frequency without clicks. Every oscillator is now a phase accumulator. Its phase advances only while it is audible, and it resumes at its previous phase when re-gated. Outline tones and lattice bands both use this. M1 tests are unchanged and still pass.
+- **Volume lanes (R5, R6).** Each voice has a left and right lane. Each lane is a set of strokes (piecewise-linear percent over time). **Default, not confirmed in SPEC:** an empty lane is constant 100%. Once a lane has strokes, time outside every stroke is 0%. Overlapping strokes add (VOL-04), and the sum is clamped to 0..=200% (R5, D-10). Record this as a default; ask before changing it.
+- **Stereo (R6).** The mono voice signal is multiplied by each lane's gain. Left and right carry identical partials and differ only by gain.
+- **Master gain (R7).** Applied after the voice sum, as in M1.
+- **Scope.** No UI, no envelopes (M5), no lane tools beyond the data model (M4).
+
+## M2 test results (2026-11-17, macOS arm64)
+
+- `cargo fmt --all -- --check`: pass.
+- `cargo build --workspace`: pass.
+- `cargo test --workspace`: pass. 38 engine unit tests (new: micro presets, wrap-around interpolation, timeline lock, depth and period scales, unit conversion, validation; lanes: empty default, stroke interpolation, add, clamp, gaps, validation) and 10 acceptance tests.
+  - M1 acceptance (7) still passes after the phase-accumulator change.
+  - M2 acceptance (3): sine micro with 10 ms period and ±10 Hz depth on a 450 Hz line gives symmetric sidebands near ±100 Hz, well below the carrier (PLAN §9 M2). L and R gains differ as set (power ratio 0.25 for 100% vs 50%). Overlapping lane strokes add, and 300% clamps to 200%.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
+
 ## Proposed
 
 _None yet._
