@@ -263,3 +263,108 @@ fn band_loudness_is_independent_of_density() {
         "loudness differs by {db:.2} dB across density"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M2 acceptance (PLAN §9, M2): micro sidebands and L/R lane gains.
+// ---------------------------------------------------------------------------
+
+use synthesis_engine::{DepthUnit, Lane, LanePoint, Micro, Preset, Stroke};
+
+/// Test M2-1: a sine micro with 10 ms period and ±10 Hz depth on a 450 Hz line
+/// produces sidebands about 100 Hz from the carrier, with a small modulation index.
+#[test]
+fn micro_sine_gives_sidebands_at_period_rate() {
+    let shape = Shape::outline(Geometry::Line {
+        a: Point::new(0.0, st(450.0)),
+        b: Point::new(1.0, st(450.0)),
+    })
+    .unwrap();
+    let mut scene = scene_with(1.0, shape);
+    scene.voices[0].micro = Some(Micro::preset(Preset::Sine, 10.0, 10.0, DepthUnit::Hz));
+    let out = render_scene(&scene).unwrap();
+    let n = 1 << 17;
+    let mut x = out.left.clone();
+    x.resize(n, 0.0);
+    let mag = spectrum(&x);
+    let carrier = energy_in(&mag, n, 445.0, 455.0);
+    let side_up = energy_in(&mag, n, 540.0, 560.0);
+    let side_dn = energy_in(&mag, n, 340.0, 360.0);
+    assert!(carrier > 0.0);
+    assert!(side_up > 0.0 && side_dn > 0.0, "no sidebands at ±100 Hz");
+    // Sidebands are about symmetric.
+    let ratio = side_up / side_dn;
+    assert!((0.5..2.0).contains(&ratio), "asymmetric sidebands: {ratio}");
+    // Small modulation index (about 10/100 = 0.1): sidebands are well below the carrier.
+    let side_amp = (side_up.sqrt() + side_dn.sqrt()) / 2.0;
+    let carrier_amp = carrier.sqrt();
+    assert!(side_amp < 0.3 * carrier_amp, "modulation too strong");
+}
+
+/// Test M2-2: left and right gains differ as set, and the partials are identical.
+#[test]
+fn left_and_right_gains_differ_as_set() {
+    let shape = Shape::outline(Geometry::Line {
+        a: Point::new(0.0, st(450.0)),
+        b: Point::new(1.0, st(450.0)),
+    })
+    .unwrap();
+    let mut scene = scene_with(1.0, shape);
+    let flat = |p: f64| Lane {
+        strokes: vec![Stroke::new(vec![LanePoint::new(0.0, p), LanePoint::new(1.0, p)]).unwrap()],
+    };
+    scene.voices[0].lane_left = flat(100.0);
+    scene.voices[0].lane_right = flat(50.0);
+    let out = render_scene(&scene).unwrap();
+    let mid = 24_000;
+    let l = out.left[mid..mid + 4800]
+        .iter()
+        .map(|&x| f64::from(x).powi(2))
+        .sum::<f64>();
+    let r = out.right[mid..mid + 4800]
+        .iter()
+        .map(|&x| f64::from(x).powi(2))
+        .sum::<f64>();
+    // 50% gain is -6.02 dB in amplitude, so power ratio is 0.25.
+    let ratio = r / l;
+    assert!(
+        (ratio - 0.25).abs() < 0.01,
+        "power ratio {ratio}, expected 0.25"
+    );
+}
+
+/// Test M2-3: overlapping lane strokes add, and the sum is clamped to 200%.
+#[test]
+fn overlapping_lane_strokes_add_and_clamp() {
+    let shape = Shape::outline(Geometry::Line {
+        a: Point::new(0.0, st(450.0)),
+        b: Point::new(1.0, st(450.0)),
+    })
+    .unwrap();
+    let mk = |p: f64| Stroke::new(vec![LanePoint::new(0.0, p), LanePoint::new(1.0, p)]).unwrap();
+    let base = scene_with(1.0, shape.clone());
+    let mut single = base.clone();
+    single.voices[0].lane_left = Lane {
+        strokes: vec![mk(100.0)],
+    };
+    let mut double = base.clone();
+    double.voices[0].lane_left = Lane {
+        strokes: vec![mk(100.0), mk(100.0)],
+    };
+    let mut capped = base.clone();
+    capped.voices[0].lane_left = Lane {
+        strokes: vec![mk(150.0), mk(150.0)],
+    };
+
+    let rms = |s: &Scene| {
+        let o = render_scene(s).unwrap();
+        let w = &o.left[12_000..36_000];
+        (w.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / w.len() as f64).sqrt()
+    };
+    let r1 = rms(&single);
+    let r2 = rms(&double);
+    let rc = rms(&capped);
+    // Two 100% strokes add to 200%: twice the amplitude.
+    assert!((r2 / r1 - 2.0).abs() < 0.01, "sum ratio {}", r2 / r1);
+    // 300% clamps to 200%: same as double.
+    assert!((rc / r2 - 1.0).abs() < 0.01, "clamp ratio {}", rc / r2);
+}
