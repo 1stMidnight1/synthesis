@@ -21,6 +21,7 @@ pub mod pitchscale;
 pub mod render;
 pub mod sampling;
 pub mod synth;
+pub mod transform;
 pub mod transport;
 
 pub use error::{EngineError, Result};
