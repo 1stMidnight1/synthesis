@@ -16,3 +16,6 @@ eframe.workspace = true
 cpal.workspace = true
 rtrb = "0.3"
 rfd = "0.15"
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }

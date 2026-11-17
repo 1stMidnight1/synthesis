@@ -65,8 +65,8 @@ pub struct PitchView {
 impl Default for PitchView {
     fn default() -> Self {
         Self {
-            lo_hz: 100.0,
-            hi_hz: 1600.0,
+            lo_hz: 110.0,
+            hi_hz: 1760.0,
             scale: synthesis_engine::PitchScale::Semitones,
         }
     }
@@ -82,8 +82,8 @@ pub struct TimeView {
 impl Default for TimeView {
     fn default() -> Self {
         Self {
-            start_s: 0.0,
-            width_s: 4.0,
+            start_s: -0.2,
+            width_s: 4.4,
         }
     }
 }
@@ -92,10 +92,7 @@ impl Default for TimeView {
 pub struct Document {
     pub scene: Scene,
     /// User loop region in seconds (TRANS-02). `None` loops the whole timeline.
-    /// Kept in the document so it is undoable like other edits.
     pub loop_region: Option<synthesis_engine::LoopRegion>,
-    /// Start point of a shift-drag loop selection, while it is in progress.
-    pub loop_anchor: Option<f64>,
     pub history: History,
     pub pitch: PitchView,
     pub time: TimeView,
@@ -109,7 +106,6 @@ impl Default for Document {
         Self {
             scene,
             loop_region: None,
-            loop_anchor: None,
             history: History::default(),
             pitch: PitchView::default(),
             time: TimeView::default(),
