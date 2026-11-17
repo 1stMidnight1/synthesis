@@ -119,6 +119,66 @@ All set to the plan's listed default, status **default** (change any by telling 
 - `cargo clippy --workspace --all-targets -- -D warnings`: pass.
 - `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
 
+## M3 design (2026-11-17)
+
+- **Block renderer.** `SceneRenderer` keeps oscillator and gate state across calls, so playback pulls consecutive blocks without restarting phase. `render_scene` is one long block. A test confirms blocks equal an offline render exactly, so playback and export agree.
+- **Owned voices.** `VoiceSynth` owns its `Voice`, so the renderer doesn't borrow the scene. This is needed for a long-lived background renderer.
+- **Background render thread (TRANS-04).** A `std::thread` owns the renderer, receives commands over a channel, and fills an `rtrb` SPSC ring about 0.25 s ahead. The audio callback only pops frames and applies a 5 ms gain fade. It never renders, allocates, or locks. On a new scene or stop, a generation counter makes the audio callback drop stale frames.
+- **Transport (TRANS-01 to 03).** Engine math: loop wrap, tempo position (bar, beat, sixteenth, 4/4), grid subdivisions. Playhead is advanced by wall time in the UI.
+- **Pitch scale (R8).** Semitone and Log Hz are both log in Hz and differ only in labels. Linear Hz is linear. A4 is configurable. Drawing is not snapped to notes; snap rounds time to the grid and pitch to the nearest semitone only when snap is on.
+- **Undo (CANVAS-05).** Snapshot-based: each edit stores the prior scene. An edit that leaves the scene invalid is rolled back and not recorded.
+- **Canvas.** Pan (middle-drag), zoom (wheel), and shape tools for line, polyline, rectangle, circle, ellipse, arc, polygon, select, delete. Fill mode for new closed shapes (CANVAS-03). Fill is drawn as a tint over the bounding box for now; exact fill rendering is a later polish item.
+- **Export.** WAV from the UI through `rfd` native save dialog, 24-bit, rendered through the same engine path.
+
+**Added in M3 round 2 (2026-11-17):**
+- **Select, move, resize (CANVAS-07).** Engine `transform` module: `translate` and `scale` about an anchor, with separate time and pitch factors (radii scale per axis). Results are validated and rejected if invalid. In the app, a click selects the topmost shape. Dragging a corner handle resizes about the opposite corner. Dragging the body moves it. A live preview shows the in-progress shape, and the change commits on release as one undo step. Escape cancels. The preview and the commit use the same `drag_result` function, so they agree.
+- **Loop region (TRANS-02).** A user loop stored in the document (undoable), set on the time ruler by shift-dragging. It is clamped to the timeline and has a minimum length. Loop playback wraps inside it. Clear loop removes it. With no region set, loop uses the full timeline, as before.
+- **Time ruler (TRANS-01).** Click or drag to scrub. A running playback restarts from the new position.
+
+**Known gaps in M3 (not hidden):**
+- Fill (CANVAS-03): the Fill tool toggles the closed shape under the click (even-odd inside test). The "fill new shapes" checkbox sets the default for new shapes. Implemented.
+- Loop region (TRANS-02) is a loop-to-duration toggle, not a user-set range.
+- Time is shown in seconds and bars/beats (TRANS-03). The loop and export range picker (OUT-04) are not implemented.
+- Fill is drawn as a bounding-box tint, not a true filled-region shape. This is display-only; the engine renders true bands (R1).
+- Select drag is tested at the geometry level (move, resize, anchor, rejection, pick). Pointer-level behaviour in the running window is not automated and needs a manual check.
+- The loop region is not saved to a project yet (PROJ-03 is M7).
+
+## M3 test results (2026-11-17, macOS arm64)
+
+- `cargo fmt --all -- --check`: pass.
+- `cargo build --workspace`: pass. `cargo build -p synthesis-app --release`: pass.
+- `cargo test --workspace`: pass. Engine 50 unit, 10 acceptance (including block-vs-offline and reset). App 6 unit (screen mapping round-trip in all three scales, axis orientation, snapping, undo/redo, rollback) and 2 render-thread tests (Load produces buffered energy, Stop clears running). Includes fill-tool toggle inside/outside tests.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
+- App launch: the release binary starts and stays running for 6 seconds with no stderr output. Interactive drawing and audible playback were NOT verified by a person.
+
+## M3 sketch-tool rework (2026-11-17)
+
+Goal: sketch tools that behave like Onshape's. Decisions taken without a user answer; flagged here so they can be changed.
+
+- **Two ways to draw, one result.** Every drawing tool accepts click-click and press-drag-release. Line and Polyline chain. Rectangle is two corners. Circle and Polygon are centre then a radius point. Ellipse is centre then a corner. Arc is a three-point arc (start, end, bend point). Polyline finishes on double-click, Enter, or a click on the last point; Escape cancels.
+- **Round at any zoom.** Circles and regular polygons use `k`, the seconds that look as long on screen as one semitone at the pointer. Shapes stay round in the view they were drawn in.
+- **Handles.** Lines and polylines: vertices. Rectangles: corners and edge midpoints (an edge drags one side). Circles and ellipses: centre and radius points. Arcs: start, middle, end, centre. Hit tolerance is 9 screen points. Only the Select tool edits existing geometry; drawing tools snap onto existing points.
+- **Selection.** Click picks the nearest outline within 7 points, or a filled shape it is inside. Shift adds or removes. Dragging empty space box-selects fully enclosed shapes. Dragging a shape moves the whole selection in one undo step. Delete removes the selection; Cmd+A selects all.
+- **Fill.** Fill is drawn from the same even-odd bands the audio uses (`sampling::fill_bands`), so a concave shape's notch is not tinted, and a filled shape sounds exactly the band it shows.
+- **Navigation.** Trackpad scroll pans. Pinch, Cmd-scroll, and mouse wheel zoom at the pointer. Shift+zoom changes time only; Alt+zoom changes pitch only. Middle, right, or Space drag pans. Raw wheel events are used to tell a mouse wheel from a trackpad.
+- **Snapping.** Points snap to existing vertices, centres, and arc points within 10 points first, then to the grid (subdivision picker). Hold Alt to disable snapping.
+- **Playback.** Looping is in the audio. The renderer jumps back at the loop end. The playhead is derived from the frames the device has played, so it shows what is heard. Edits are sent to the render thread live, with a 10 ms crossfade. Playback renders at the device sample rate, so no resampling is needed.
+- **Band level.** `BAND_GAIN` changed from 0.5 to 0.29 so a one-octave filled band sits near the level of one outline tone (about 0.707 RMS). The old value made fills about 1.7 times as loud. This is an agent-chosen default and can be changed.
+
+**Testing.** `ui_tests.rs` (24 tests) drives the real app with egui_kittest: real pointer press, move, and release; real modifier state. It covers each tool (click-click and drag), arc bend direction, circle roundness on screen, polyline finish rules, snapping, select (pixel picking, box select, shift, move, handle and edge drags), undo, fill on non-rectangular shapes (including nested), fill display pixels, delete, shortcuts, wheel and trackpad navigation, and ruler scrub and loop. Screenshots are in `SYNTHESIS_SHOTS=<dir> cargo test -p synthesis-app screenshots`.
+
+**Not done / limits.** Screenshots were inspected by eye, not compared to Onshape. Audible playback was not checked by ear. Constraints (CONSTR-*) are still not implemented.
+
+## M3 rework test results (2026-11-17, macOS arm64)
+
+- `cargo fmt --all -- --check`: pass.
+- `cargo build --workspace`: pass.
+- `cargo test --workspace`: pass. Engine 74 unit and 10 acceptance. App 39 unit, including 24 UI interaction tests and 1 screenshot test.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
+- Release build starts and stays up 6 s with no stderr.
+
 ## Proposed
 
 _None yet._

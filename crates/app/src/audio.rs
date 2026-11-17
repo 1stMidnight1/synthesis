@@ -1,49 +1,20 @@
 //! Audio output via cpal (CoreAudio on macOS, WASAPI on Windows).
 //!
-//! The UI thread talks to the audio callback only through atomics, so the
-//! callback never blocks, allocates, or logs (TRANS-04, AGENTS.md rule 3).
+//! The callback hands the device buffer to `playback::Player`, which only pops
+//! pre-rendered frames from a lock-free ring (TRANS-04, AGENTS rule 3). For
+//! non-f32 devices the callback converts from a fixed scratch buffer that is
+//! allocated once, before the stream starts.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
-use synthesis_engine::osc::SineOsc;
+use rtrb::Consumer;
 
-/// An `f32` that can be shared lock-free between threads.
-#[derive(Debug)]
-pub struct AtomicF32(AtomicU32);
+use crate::playback::{Frame, Player, Shared};
 
-impl AtomicF32 {
-    pub fn new(v: f32) -> Self {
-        Self(AtomicU32::new(v.to_bits()))
-    }
-    pub fn load(&self) -> f32 {
-        f32::from_bits(self.0.load(Ordering::Relaxed))
-    }
-    pub fn store(&self, v: f32) {
-        self.0.store(v.to_bits(), Ordering::Relaxed);
-    }
-}
-
-/// Parameters shared between the UI and the audio callback.
-#[derive(Debug)]
-pub struct Shared {
-    pub playing: AtomicBool,
-    pub freq_hz: AtomicF32,
-    /// Linear master gain, 0..1 (OUT-01).
-    pub gain: AtomicF32,
-}
-
-impl Default for Shared {
-    fn default() -> Self {
-        Self {
-            playing: AtomicBool::new(false),
-            freq_hz: AtomicF32::new(440.0),
-            gain: AtomicF32::new(0.7),
-        }
-    }
-}
+/// Largest device buffer converted per chunk, in samples.
+const SCRATCH: usize = 8192;
 
 /// A running output stream. Dropping it stops audio.
 pub struct AudioOut {
@@ -55,8 +26,9 @@ pub struct AudioOut {
 }
 
 impl AudioOut {
-    /// Open the default output device and start a stream driven by `shared`.
-    pub fn start(shared: Arc<Shared>) -> Result<Self, String> {
+    /// Open the default output device and play frames from `consumer`.
+    /// Playback renders at the device's own rate, so no resampling is needed.
+    pub fn start(consumer: Consumer<Frame>, shared: Arc<Shared>) -> Result<Self, String> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -68,13 +40,14 @@ impl AudioOut {
         let supported = device.default_output_config().map_err(|e| e.to_string())?;
         let sample_format = supported.sample_format();
         let config: StreamConfig = supported.into();
+        let player = Player::new(consumer, shared, config.sample_rate);
 
         let stream = match sample_format {
-            SampleFormat::F32 => build::<f32>(&device, &config, shared),
-            SampleFormat::F64 => build::<f64>(&device, &config, shared),
-            SampleFormat::I16 => build::<i16>(&device, &config, shared),
-            SampleFormat::I32 => build::<i32>(&device, &config, shared),
-            SampleFormat::U16 => build::<u16>(&device, &config, shared),
+            SampleFormat::F32 => build_f32(&device, &config, player),
+            SampleFormat::F64 => build::<f64>(&device, &config, player),
+            SampleFormat::I16 => build::<i16>(&device, &config, player),
+            SampleFormat::I32 => build::<i32>(&device, &config, player),
+            SampleFormat::U16 => build::<u16>(&device, &config, player),
             other => return Err(format!("unsupported sample format {other}")),
         }?;
         stream.play().map_err(|e| e.to_string())?;
@@ -89,42 +62,46 @@ impl AudioOut {
     }
 }
 
+fn build_f32(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    mut player: Player,
+) -> Result<Stream, String> {
+    let channels = usize::from(config.channels);
+    device
+        .build_output_stream(
+            *config,
+            move |data: &mut [f32], _| player.fill(data, channels),
+            // Error callback runs off the real-time path; printing is fine here.
+            |err| eprintln!("audio stream error: {err}"),
+            None,
+        )
+        .map_err(|e| e.to_string())
+}
+
 fn build<T>(
     device: &cpal::Device,
     config: &StreamConfig,
-    shared: Arc<Shared>,
+    mut player: Player,
 ) -> Result<Stream, String>
 where
     T: SizedSample + FromSample<f32>,
 {
-    let sample_rate = f64::from(config.sample_rate);
-    let channels = usize::from(config.channels);
-    let mut osc = SineOsc::default();
-    // Smoothed gain avoids clicks when toggling play or moving the slider.
-    let mut current_gain = 0.0f32;
-    let ramp_per_sample = 1.0 / (0.005 * sample_rate as f32); // 5 ms full-scale ramp
-
+    let channels = usize::from(config.channels).max(1);
+    let chunk = (SCRATCH / channels) * channels;
+    let mut scratch = vec![0.0f32; chunk];
     device
         .build_output_stream(
             *config,
             move |data: &mut [T], _| {
-                let target = if shared.playing.load(Ordering::Relaxed) {
-                    shared.gain.load()
-                } else {
-                    0.0
-                };
-                let freq = f64::from(shared.freq_hz.load());
-                for frame in data.chunks_mut(channels) {
-                    let diff = target - current_gain;
-                    current_gain += diff.clamp(-ramp_per_sample, ramp_per_sample);
-                    let s = osc.next(freq, sample_rate) as f32 * current_gain;
-                    let v = T::from_sample(s);
-                    for out in frame.iter_mut() {
-                        *out = v;
+                for out in data.chunks_mut(chunk) {
+                    let buf = &mut scratch[..out.len()];
+                    player.fill(buf, channels);
+                    for (o, s) in out.iter_mut().zip(buf.iter()) {
+                        *o = T::from_sample(*s);
                     }
                 }
             },
-            // Error callback runs off the real-time path; printing is fine here.
             |err| eprintln!("audio stream error: {err}"),
             None,
         )

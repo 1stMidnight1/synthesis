@@ -37,8 +37,13 @@ use crate::osc::SineOsc;
 use crate::pitch::{AUDIBLE_MAX_HZ, AUDIBLE_MIN_HZ, hz_to_st, st_to_hz};
 use crate::sampling::{is_vertical, slice_at, spans, st_at};
 
-/// Base lattice amplitude before density compensation (tuned by ear later).
-pub const BAND_GAIN: f64 = 0.5;
+/// Base lattice amplitude before density compensation.
+///
+/// Power per semitone of band is `BAND_GAIN^2 / 2`, independent of density
+/// (ENGINE-07). With 0.29 a one-octave band has about the RMS of one outline
+/// tone (0.707), so filled shapes and outlines sit at similar levels. Wider
+/// bands are louder; master gain and the meter manage that (PLAN §5.4).
+pub const BAND_GAIN: f64 = 0.29;
 
 /// Gain of each exact outline tone.
 pub const TONE_GAIN: f64 = 1.0;
@@ -88,8 +93,8 @@ fn ramp_toward(gain: f64, target: f64, step: f64) -> f64 {
 }
 
 /// Synth state for one voice. Produces a mono sample; L/R gains are applied by the renderer (R6).
-pub struct VoiceSynth<'a> {
-    voice: &'a Voice,
+pub struct VoiceSynth {
+    voice: Voice,
     sr: f64,
     a4_hz: f64,
     ramp_step: f64,
@@ -106,11 +111,14 @@ pub struct VoiceSynth<'a> {
     lat_osc: Vec<SineOsc>,
     lat_gain: Vec<f64>,
     lat_target: Vec<f64>,
+    /// Re-evaluate lattice gates on the next sample even if it is not on a
+    /// control-frame boundary (set after a seek).
+    force_update: bool,
 }
 
-impl<'a> VoiceSynth<'a> {
-    /// Prepare synth state for `voice`. `settings` must already be validated.
-    pub fn new(voice: &'a Voice, settings: &Settings) -> Self {
+impl VoiceSynth {
+    /// Prepare synth state for `voice`, taking ownership. `settings` must already be validated.
+    pub fn owned(voice: Voice, settings: &Settings) -> Self {
         let sr = f64::from(settings.sample_rate);
         let ramp_samples = (settings.ramp_ms * 1e-3 * sr).max(1.0);
 
@@ -163,7 +171,15 @@ impl<'a> VoiceSynth<'a> {
             lat_osc,
             lat_gain: vec![0.0; n],
             lat_target: vec![0.0; n],
+            force_update: true,
         }
+    }
+
+    /// Prepare for a jump in the sample index (seek or loop). Phases and gains
+    /// are kept, so audio stays continuous; gates follow the new time on the
+    /// next sample and ramp as usual (ENGINE-05).
+    pub fn note_jump(&mut self) {
+        self.force_update = true;
     }
 
     /// Number of lattice oscillators (exposed for tests and diagnostics).
@@ -183,7 +199,8 @@ impl<'a> VoiceSynth<'a> {
     /// Mono sample at index `n` (time `n / sr`). Call with increasing `n`.
     pub fn process(&mut self, n: usize) -> f64 {
         let t = n as f64 / self.sr;
-        if n.is_multiple_of(self.control_samples) {
+        if self.force_update || n.is_multiple_of(self.control_samples) {
+            self.force_update = false;
             self.update_lattice_targets(t);
         }
 
@@ -257,15 +274,15 @@ mod tests {
     #[test]
     fn lattice_size_follows_density() {
         let voice = Voice::new("v");
-        let fine = VoiceSynth::new(
-            &voice,
+        let fine = VoiceSynth::owned(
+            voice.clone(),
             &Settings {
                 density_cents: 5.0,
                 ..Settings::default()
             },
         );
-        let coarse = VoiceSynth::new(
-            &voice,
+        let coarse = VoiceSynth::owned(
+            voice,
             &Settings {
                 density_cents: 20.0,
                 ..Settings::default()

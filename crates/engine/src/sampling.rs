@@ -68,6 +68,31 @@ pub fn vertical_span(seg: &Segment) -> (f64, f64) {
     (seg.a.st.min(seg.b.st), seg.a.st.max(seg.b.st))
 }
 
+/// Filled bands of one closed shape at time `t`: its non-vertical edge
+/// crossings sorted and paired even-odd (R1). This is the single definition of
+/// "inside" used by both the audio and the canvas fill display, so what is
+/// drawn as filled is exactly what sounds as a band.
+pub fn fill_bands(shape: &Shape, t: f64) -> Vec<(f64, f64)> {
+    fill_bands_edges(&shape.edges(), t)
+}
+
+/// [`fill_bands`] for pre-flattened edges, so callers that sample many times
+/// (the canvas fill display) flatten a shape only once.
+pub fn fill_bands_edges(edges: &[Segment], t: f64) -> Vec<(f64, f64)> {
+    let mut crossings: Vec<f64> = edges
+        .iter()
+        .filter(|seg| !is_vertical(seg) && spans(seg, t))
+        .map(|seg| st_at(seg, t))
+        .collect();
+    crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    crossings
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
+
 /// Sounding set of a voice's shapes at time `t` (R1 to R3).
 ///
 /// `burst_window_s` is the vertical-edge window (R2, default 5 ms).
@@ -89,10 +114,7 @@ pub fn slice_at(shapes: &[Shape], t: f64, burst_window_s: f64) -> Slice {
         }
         slice.tones.extend_from_slice(&crossings);
         if shape.filled {
-            crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            for pair in crossings.as_chunks::<2>().0 {
-                slice.bands.push((pair[0], pair[1]));
-            }
+            slice.bands.extend(fill_bands(shape, t));
         }
     }
     slice
@@ -211,6 +233,48 @@ mod tests {
         assert!(slice_at(&shapes, 0.5, W).is_silent());
         assert!(!slice_at(&shapes, 0.1, W).is_silent());
         assert!(slice_at(&[], 0.1, W).is_silent());
+    }
+
+    /// R1 with non-rectangular shapes: a filled circle sounds one band whose
+    /// edges follow the circle, and a concave polygon sounds two bands where a
+    /// vertical line crosses it four times.
+    #[test]
+    fn r1_fill_follows_non_rectangular_shapes() {
+        let circle = Shape::filled(Geometry::Circle {
+            center: Point::new(1.0, 60.0),
+            radius_s: 0.5,
+            radius_st: 6.0,
+        })
+        .unwrap();
+        let s = slice_at(std::slice::from_ref(&circle), 1.0, W);
+        assert_eq!(s.bands.len(), 1);
+        let (lo, hi) = s.bands[0];
+        assert!(
+            (lo - 54.0).abs() < 0.01 && (hi - 66.0).abs() < 0.01,
+            "{lo}..{hi}"
+        );
+        // Near the left edge the band is narrow.
+        let edge = fill_bands(&circle, 0.6);
+        assert_eq!(edge.len(), 1);
+        assert!(edge[0].1 - edge[0].0 < 8.0);
+
+        // A "U" shape: at t = 1.5 the line crosses the floor and the two arms' inner edges.
+        let u = Shape::filled(Geometry::Polygon {
+            points: vec![
+                Point::new(0.0, 60.0),
+                Point::new(3.0, 60.0),
+                Point::new(3.0, 70.0),
+                Point::new(2.0, 70.0),
+                Point::new(2.0, 62.0),
+                Point::new(1.0, 62.0),
+                Point::new(1.0, 70.0),
+                Point::new(0.0, 70.0),
+            ],
+        })
+        .unwrap();
+        assert_eq!(fill_bands(&u, 0.5), vec![(60.0, 70.0)]);
+        assert_eq!(fill_bands(&u, 1.5), vec![(60.0, 62.0)]);
+        assert!(fill_bands(&u, 4.0).is_empty());
     }
 
     /// Shared corners count once: a line ending where another begins has one tone.
