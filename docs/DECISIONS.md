@@ -179,6 +179,27 @@ Goal: sketch tools that behave like Onshape's. Decisions taken without a user an
 - `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
 - Release build starts and stays up 6 s with no stderr.
 
+## M3 polish (2026-11-17)
+
+Reported after the M3 merge: curves sound strange, zooming past t = 0 shows a black strip and hides labels, labels are small and sparse, and the grid needs typed X and Y divisions.
+
+- **Curves (CANVAS/R1).** Measured, not guessed. A circle's outline is 256 straight edges, each lasting about 8 ms, shorter than the 2 ms gate ramps at each end, so the outline sounded like a chatter of short glides. `CURVE_SEGMENTS_PER_TURN` is now 64: each edge lasts about 31 ms and changes pitch by at most 0.6 semitones. Measured spectrum and duration are in the commit notes; `circle_outline_has_steady_edges` guards the result. This keeps R1 (each crossing is one frequency). A user choice was asked (coarse tones, band, or tune by ear); the chosen option was "coarse tones".
+- **Time never negative.** The view's left edge is t = 0 and `clamp_time` enforces it, so no area before the timeline can appear. The grey strip that drew for t < 0 is removed. Regression tests cover pan, zoom, and wheel.
+- **Typed grid divisions.** `Division` (engine, `grid.rs`) is `1/N`, 1 to 256. X is a `1/N` of a beat (`1/16` is a sixteenth). Y is a `1/N` of a semitone in Semitones mode, and of an octave in the Hz modes, which is the same grid on a log axis. Two text fields replace the subdivision dropdown; invalid text is ignored and the last valid value is kept.
+- **Pitch snap** follows the Y division (previously it always rounded to whole semitones). It is skipped when the step is under 4 screen points, so it never jumps across a pixel.
+- **Labels.** Ruler labels every beat (seconds) when there is room and every bar (bar number and seconds) at a readable spacing, with a background. Pitch labels are 12 px with a background, at every step that has room. Note names in Semitones mode, Hz in Hz modes.
+- **Accessibility.** The two division fields have accessible names. The accessibility check is not disabled.
+
+**Testing.** Engine: `grid` unit tests (parse, bounds, steps), `circle_outline_has_steady_edges`. App: `view_never_shows_time_before_zero`, snap tests for X and Y division, UI tests for the wheel past zero, typed X and Y divisions, and invalid text. 46 app tests, 79 engine unit, 11 engine acceptance.
+
+**Not verified.** How the curves sound is still a measurement, not a listening test. The label readability is judged from screenshots. The curve sound needs your ear.
+
+## M3 polish test results (2026-11-17, macOS arm64)
+
+- `cargo fmt --all -- --check`, `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
+- Release build starts and stays up 6 s with no stderr.
+
 ## Proposed
 
 _None yet._
