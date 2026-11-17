@@ -10,7 +10,7 @@ use std::sync::Arc;
 use rustfft::{FftPlanner, num_complex::Complex};
 use synthesis_engine::geometry::{Geometry, Point};
 use synthesis_engine::model::{Scene, Settings, Voice};
-use synthesis_engine::pitch::hz_to_st;
+use synthesis_engine::pitch::{hz_to_st, st_to_hz};
 use synthesis_engine::{Shape, render_scene};
 
 const SR: u32 = 48_000;
@@ -367,4 +367,40 @@ fn overlapping_lane_strokes_add_and_clamp() {
     assert!((r2 / r1 - 2.0).abs() < 0.01, "sum ratio {}", r2 / r1);
     // 300% clamps to 200%: same as double.
     assert!((rc / r2 - 1.0).abs() < 0.01, "clamp ratio {}", rc / r2);
+}
+
+/// Curve outlines sound as steady tones: a circle held across a vertical
+/// slice has one clear pitch that lasts long enough to hear, not a chatter of
+/// ~8 ms glides. Each outline edge spans about 31 ms.
+#[test]
+fn circle_outline_has_steady_edges() {
+    use synthesis_engine::geometry::CURVE_SEGMENTS_PER_TURN;
+    assert_eq!(CURVE_SEGMENTS_PER_TURN, 64);
+    let shape = Shape::outline(Geometry::Circle {
+        center: Point::new(1.0, 69.0),
+        radius_s: 0.5,
+        radius_st: 6.0,
+    })
+    .unwrap();
+    let mut scene = scene_with(3.0, shape);
+    scene.settings.master_gain = 1.0;
+    let out = render_scene(&scene).unwrap();
+    let n = 1 << 16;
+    // A 1 s window in the middle of the circle's time span.
+    let mut x = out.left[28_800..28_800 + 48_000].to_vec();
+    x.resize(n, 0.0);
+    let mag = spectrum(&x);
+    let max = mag.iter().cloned().fold(0.0, f64::max);
+    // The strongest tone must sit inside the circle's pitch range (63 to 75 st).
+    let k = (1..mag.len() - 1)
+        .max_by(|&a, &b| mag[a].total_cmp(&mag[b]))
+        .unwrap();
+    let f = bin_hz(k, n);
+    let lo = st_to_hz(63.0, 440.0);
+    let hi = st_to_hz(75.0, 440.0);
+    assert!(
+        f >= lo * 0.99 && f <= hi * 1.01,
+        "dominant tone {f} Hz outside the outline range"
+    );
+    assert!(mag[k] > 0.2 * max, "one tone clearly dominates");
 }
