@@ -200,6 +200,29 @@ Reported after the M3 merge: curves sound strange, zooming past t = 0 shows a bl
 - `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
 - Release build starts and stays up 6 s with no stderr.
 
+## M3 polish: curve sound variants (2026-11-17)
+
+Curves no longer sample into straight edges; a circle, ellipse, or arc is split at its time extremes into branches, each a single-valued function of time, with one continuous oscillator per branch (`branch.rs`). Arc pitch error against the analytic curve fell from 11.0 to 6.3 cents median.
+
+Four variants are selectable per voice ("Curve sound" in the sketch panel), so the choice is made by ear:
+
+- **Literal (default):** both branches together, 2 ms fades. R1 as written.
+- **Both, long fades:** both branches, 15 ms fades at the turn points.
+- **Upper only:** the upper branch alone.
+- **Lower only:** the lower branch alone.
+
+"Export curve variants..." writes all four as WAVs into a folder. Listening files for a circle and an arc are in `~/Desktop/synthesis_curve_listening/`, written by `crates/engine/tests/write_listening.rs` (`SYNTHESIS_LISTEN=<dir>`).
+
+**Known caveat for the listening test.** Both-branch variants sum two tones and reach full scale (peak 1.000 in the export); single-branch variants peak at the 0.7 master gain. They are about 3 dB apart, so compare them at matched level. Loudness is not normalised per variant; that is a decision for you.
+
+**Measured, not yet heard.** The two branches of a circle (about 311 Hz and 622 Hz at the middle time, an octave apart) sum to a waveform that is not a steady tone. I have not verified by ear whether that sounds rough. The earlier "beating" explanation was wrong: a 2:1 pair gives a periodic waveform, not a slow beat. The variants exist so the difference can be heard directly.
+
+## M3 polish: curve variants test results (2026-11-17, macOS arm64)
+
+- `cargo fmt --all -- --check`, `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`: pass. Tests: 46 app, 86 engine unit, 13 engine acceptance.
+- New tests: branch geometry (single-valued, on the curve, analytic rate matches finite differences, arc split), `CurveSound` selection, variant branch selection (upper-only and lower-only are each at least 20x weaker on the silent pitch), variants export as distinct WAVs.
+- `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass. Release build: pass.
+
 ## Proposed
 
 _None yet._
