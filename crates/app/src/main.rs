@@ -8,6 +8,7 @@ mod audio;
 mod canvas;
 mod document;
 mod playback;
+mod ruler;
 
 use eframe::egui;
 use synthesis_engine::{BitDepth, PitchScale, Scene, Tempo, render_scene, write_wav_file};
@@ -77,6 +78,14 @@ impl SynthesisApp {
         self.playing = true;
     }
 
+    /// Move the playhead. If playback is running, restart from the new position.
+    fn seek(&mut self, t_s: f64) {
+        self.playhead_s = t_s.clamp(0.0, self.doc.scene.duration_s);
+        if self.playing {
+            self.start_playback();
+        }
+    }
+
     fn stop_playback(&mut self) {
         self.render.send(Command::Stop);
         self.playing = false;
@@ -99,7 +108,9 @@ impl SynthesisApp {
             return;
         }
         let loop_region = if self.loop_on {
-            synthesis_engine::LoopRegion::new(0.0, self.doc.scene.duration_s)
+            self.doc
+                .loop_region
+                .or_else(|| synthesis_engine::LoopRegion::new(0.0, self.doc.scene.duration_s))
         } else {
             None
         };
@@ -169,6 +180,15 @@ impl eframe::App for SynthesisApp {
                     self.playhead_s = 0.0;
                 }
                 ui.checkbox(&mut self.loop_on, "Loop");
+                if ui
+                    .add_enabled(
+                        self.doc.loop_region.is_some(),
+                        egui::Button::new("Clear loop"),
+                    )
+                    .clicked()
+                {
+                    self.doc.clear_loop();
+                }
                 ui.separator();
                 let (bar, beat, sixteenth) = Tempo::new(self.canvas.bpm)
                     .map(|t| t.position(self.playhead_s))
@@ -258,6 +278,10 @@ impl eframe::App for SynthesisApp {
         });
 
         egui::CentralPanel::default_margins().show(ui, |ui| {
+            if let Some(t) = ruler::show(ui, &mut self.doc, self.playhead_s) {
+                self.seek(t);
+            }
+            ui.add_space(4.0);
             let a4 = self.a4();
             canvas::show(ui, &mut self.doc, &mut self.canvas, a4);
         });

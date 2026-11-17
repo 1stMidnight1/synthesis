@@ -91,6 +91,11 @@ impl Default for TimeView {
 /// The app's document: one scene plus view state.
 pub struct Document {
     pub scene: Scene,
+    /// User loop region in seconds (TRANS-02). `None` loops the whole timeline.
+    /// Kept in the document so it is undoable like other edits.
+    pub loop_region: Option<synthesis_engine::LoopRegion>,
+    /// Start point of a shift-drag loop selection, while it is in progress.
+    pub loop_anchor: Option<f64>,
     pub history: History,
     pub pitch: PitchView,
     pub time: TimeView,
@@ -103,6 +108,8 @@ impl Default for Document {
         scene.voices.push(Voice::new("Voice 1"));
         Self {
             scene,
+            loop_region: None,
+            loop_anchor: None,
             history: History::default(),
             pitch: PitchView::default(),
             time: TimeView::default(),
@@ -124,6 +131,33 @@ impl Document {
         }
         self.history.push(&before);
         Some(result)
+    }
+
+    /// Set the loop region, clamped to the timeline and at least `min_len_s` long.
+    /// Returns false if the range is empty after clamping.
+    pub fn set_loop(&mut self, start_s: f64, end_s: f64, min_len_s: f64) -> bool {
+        let dur = self.scene.duration_s;
+        let (a, b) = if start_s <= end_s {
+            (start_s, end_s)
+        } else {
+            (end_s, start_s)
+        };
+        let a = a.clamp(0.0, dur);
+        let b = b.clamp(0.0, dur).max(a + min_len_s);
+        if b > dur {
+            return false;
+        }
+        match synthesis_engine::LoopRegion::new(a, b) {
+            Some(r) => {
+                self.loop_region = Some(r);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn clear_loop(&mut self) {
+        self.loop_region = None;
     }
 
     pub fn undo(&mut self) -> bool {
@@ -171,6 +205,32 @@ mod tests {
         assert_eq!(doc.scene.voices[0].shapes.len(), 0);
         assert!(doc.redo());
         assert_eq!(doc.scene.voices[0].shapes.len(), 1);
+    }
+
+    #[test]
+    fn loop_region_is_clamped_and_ordered() {
+        let mut doc = Document::default(); // 10 s timeline
+        assert!(doc.set_loop(6.0, 2.0, 0.1)); // reversed input is reordered
+        let r = doc.loop_region.unwrap();
+        assert_eq!((r.start_s, r.end_s), (2.0, 6.0));
+        assert!(doc.set_loop(-3.0, 4.0, 0.1));
+        assert_eq!(doc.loop_region.unwrap().start_s, 0.0, "clamped at zero");
+        assert!(doc.set_loop(9.0, 50.0, 0.1));
+        assert!(
+            doc.loop_region.unwrap().end_s <= 10.0,
+            "clamped at duration"
+        );
+    }
+
+    #[test]
+    fn loop_region_has_minimum_length() {
+        let mut doc = Document::default();
+        assert!(doc.set_loop(3.0, 3.0, 0.5));
+        let r = doc.loop_region.unwrap();
+        assert!(
+            (r.len_s() - 0.5).abs() < 1e-12,
+            "collapsed range is widened to min"
+        );
     }
 
     #[test]
