@@ -102,6 +102,22 @@ pub fn advance(t_s: f64, dt_s: f64, duration_s: f64, looping: Option<LoopRegion>
     }
 }
 
+/// Timeline position after playing `elapsed_s` seconds from `start_s`.
+///
+/// With a loop, playback that starts before the loop's end wraps from the end
+/// back to the loop start; playback that starts after the end plays straight
+/// on, as in a DAW. The audio renderer and the on-screen playhead both use
+/// this rule, so the playhead shows what is being heard.
+pub fn timeline_pos(start_s: f64, elapsed_s: f64, looping: Option<LoopRegion>) -> f64 {
+    let t = start_s + elapsed_s.max(0.0);
+    match looping {
+        Some(r) if start_s < r.end_s && t >= r.end_s => {
+            r.start_s + (t - r.end_s).rem_euclid(r.len_s())
+        }
+        _ => t,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +167,28 @@ mod tests {
         assert!((Subdivision::Sixteenth.step_s(t) - 0.125).abs() < 1e-12);
         assert!((Subdivision::ThirtySecond.step_s(t) - 0.0625).abs() < 1e-12);
         assert!((Subdivision::Seconds.step_s(t) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn timeline_pos_wraps_only_when_starting_before_loop_end() {
+        let l = LoopRegion::new(1.0, 2.0);
+        assert!(
+            (timeline_pos(0.5, 0.25, l) - 0.75).abs() < 1e-12,
+            "before the loop"
+        );
+        assert!(
+            (timeline_pos(0.5, 1.75, l) - 1.25).abs() < 1e-12,
+            "wrapped once"
+        );
+        assert!(
+            (timeline_pos(1.5, 2.6, l) - 1.1).abs() < 1e-9,
+            "wrapped twice"
+        );
+        assert!(
+            (timeline_pos(3.0, 1.0, l) - 4.0).abs() < 1e-12,
+            "started after the loop"
+        );
+        assert!((timeline_pos(0.0, 5.0, None) - 5.0).abs() < 1e-12);
     }
 
     #[test]

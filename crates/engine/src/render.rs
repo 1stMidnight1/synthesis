@@ -8,7 +8,7 @@
 //! can pull consecutive blocks without restarting phase. [`render_scene`] is
 //! one long block, so export and playback share the same code path.
 
-use crate::error::Result;
+use crate::error::{EngineError, Result};
 use crate::model::{Scene, Settings, Voice};
 use crate::synth::VoiceSynth;
 
@@ -56,6 +56,52 @@ impl SceneRenderer {
         };
         this.rebuild_synths();
         Ok(this)
+    }
+
+    /// Build a renderer for live playback at the output device's rate.
+    ///
+    /// Export is limited to 44.1 and 48 kHz (OUT-03), but an output device
+    /// may run at another rate. Rendering at the device rate keeps pitch and
+    /// tempo correct without resampling.
+    pub fn for_playback(scene: &Scene, sample_rate: u32) -> Result<Self> {
+        scene.validate()?;
+        if !(8_000..=384_000).contains(&sample_rate) {
+            return Err(EngineError::InvalidSettings(format!(
+                "playback rate {sample_rate} Hz is out of range"
+            )));
+        }
+        let mut s = scene.clone();
+        s.settings.sample_rate = 48_000;
+        let mut this = Self::new(&s)?;
+        this.sample_rate = sample_rate;
+        this.settings.sample_rate = sample_rate;
+        this.rebuild_synths();
+        Ok(this)
+    }
+
+    /// Timeline position of the next frame, in seconds.
+    pub fn position_s(&self) -> f64 {
+        self.next_index as f64 / f64::from(self.sample_rate)
+    }
+
+    /// Index of the next frame on the timeline.
+    pub fn position_frames(&self) -> usize {
+        self.next_index
+    }
+
+    /// Jump to frame `index` (see [`Self::seek`]).
+    pub fn seek_frames(&mut self, index: usize) {
+        self.next_index = index;
+        for synth in &mut self.synths {
+            synth.note_jump();
+        }
+    }
+
+    /// Jump to `t_s` without rendering the skipped audio. Oscillator phases
+    /// and gate levels carry over, so the jump is click-free; gates then ramp
+    /// toward what sounds at the new time.
+    pub fn seek(&mut self, t_s: f64) {
+        self.seek_frames((t_s.max(0.0) * f64::from(self.sample_rate)).round() as usize);
     }
 
     fn rebuild_synths(&mut self) {
@@ -165,6 +211,74 @@ mod tests {
         assert_eq!(left.len(), total);
         assert_eq!(left, whole.left, "blocks must match offline render exactly");
         assert_eq!(right, whole.right);
+    }
+
+    /// Seeking skips audio without rendering it. After the gate ramp, the
+    /// audio is what sounds at the new time: a steady tone at its exact level,
+    /// and silence in a gap. (A filled band's short-window level depends on
+    /// the partials' relative phases, which a seek changes, so it is not
+    /// compared sample-for-sample.)
+    #[test]
+    fn seek_lands_on_the_new_time() {
+        let st = crate::pitch::hz_to_st(450.0, 440.0);
+        let tone = |t0: f64, t1: f64| {
+            Shape::outline(Geometry::Line {
+                a: Point::new(t0, st),
+                b: Point::new(t1, st),
+            })
+            .unwrap()
+        };
+        let mut s = Scene::new(2.0, Settings::default());
+        s.settings.master_gain = 1.0;
+        s.voices.push(
+            Voice::new("v")
+                .with_shape(tone(0.0, 0.5))
+                .with_shape(tone(1.0, 2.0)),
+        );
+        let rms = |x: &[f32]| {
+            (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len() as f64).sqrt()
+        };
+        let mut r = SceneRenderer::new(&s).unwrap();
+        r.next_block(4_800); // playing the first tone
+        r.seek(0.7); // into the gap
+        assert!((r.position_s() - 0.7).abs() < 1e-9);
+        let gap = r.next_block(4_800);
+        assert!(rms(&gap.left[480..]) < 1e-6, "gap after seek is silent");
+        r.seek(1.5); // into the second tone
+        let on = r.next_block(4_800);
+        let level = rms(&on.left[480..]);
+        assert!(
+            (level - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.01,
+            "tone level {level}"
+        );
+        // The first samples ramp in rather than jump (ENGINE-05).
+        assert!(on.left[0].abs() < 0.01);
+    }
+
+    /// Playback at a device rate other than 48 kHz keeps pitch correct.
+    #[test]
+    fn playback_rate_keeps_pitch() {
+        let st = crate::pitch::hz_to_st(441.0, 440.0);
+        let mut s = Scene::new(0.5, Settings::default());
+        s.voices.push(
+            Voice::new("v").with_shape(
+                Shape::outline(Geometry::Line {
+                    a: Point::new(0.0, st),
+                    b: Point::new(0.5, st),
+                })
+                .unwrap(),
+            ),
+        );
+        let mut r = SceneRenderer::for_playback(&s, 44_100).unwrap();
+        assert_eq!(r.sample_rate(), 44_100);
+        let b = r.next_block(44_100 / 2);
+        // Count rising zero crossings over the steady part: about 441 Hz * 0.4 s.
+        let x = &b.left[2_205..];
+        let ups = x.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        let secs = x.len() as f64 / 44_100.0;
+        let hz = ups as f64 / secs;
+        assert!((hz - 441.0).abs() < 4.0, "measured {hz} Hz");
+        assert!(SceneRenderer::for_playback(&s, 1_000).is_err());
     }
 
     #[test]
