@@ -152,6 +152,33 @@ All set to the plan's listed default, status **default** (change any by telling 
 - `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
 - App launch: the release binary starts and stays running for 6 seconds with no stderr output. Interactive drawing and audible playback were NOT verified by a person.
 
+## M3 sketch-tool rework (2026-11-17)
+
+Goal: sketch tools that behave like Onshape's. Decisions taken without a user answer; flagged here so they can be changed.
+
+- **Two ways to draw, one result.** Every drawing tool accepts click-click and press-drag-release. Line and Polyline chain. Rectangle is two corners. Circle and Polygon are centre then a radius point. Ellipse is centre then a corner. Arc is a three-point arc (start, end, bend point). Polyline finishes on double-click, Enter, or a click on the last point; Escape cancels.
+- **Round at any zoom.** Circles and regular polygons use `k`, the seconds that look as long on screen as one semitone at the pointer. Shapes stay round in the view they were drawn in.
+- **Handles.** Lines and polylines: vertices. Rectangles: corners and edge midpoints (an edge drags one side). Circles and ellipses: centre and radius points. Arcs: start, middle, end, centre. Hit tolerance is 9 screen points. Only the Select tool edits existing geometry; drawing tools snap onto existing points.
+- **Selection.** Click picks the nearest outline within 7 points, or a filled shape it is inside. Shift adds or removes. Dragging empty space box-selects fully enclosed shapes. Dragging a shape moves the whole selection in one undo step. Delete removes the selection; Cmd+A selects all.
+- **Fill.** Fill is drawn from the same even-odd bands the audio uses (`sampling::fill_bands`), so a concave shape's notch is not tinted, and a filled shape sounds exactly the band it shows.
+- **Navigation.** Trackpad scroll pans. Pinch, Cmd-scroll, and mouse wheel zoom at the pointer. Shift+zoom changes time only; Alt+zoom changes pitch only. Middle, right, or Space drag pans. Raw wheel events are used to tell a mouse wheel from a trackpad.
+- **Snapping.** Points snap to existing vertices, centres, and arc points within 10 points first, then to the grid (subdivision picker). Hold Alt to disable snapping.
+- **Playback.** Looping is in the audio. The renderer jumps back at the loop end. The playhead is derived from the frames the device has played, so it shows what is heard. Edits are sent to the render thread live, with a 10 ms crossfade. Playback renders at the device sample rate, so no resampling is needed.
+- **Band level.** `BAND_GAIN` changed from 0.5 to 0.29 so a one-octave filled band sits near the level of one outline tone (about 0.707 RMS). The old value made fills about 1.7 times as loud. This is an agent-chosen default and can be changed.
+
+**Testing.** `ui_tests.rs` (24 tests) drives the real app with egui_kittest: real pointer press, move, and release; real modifier state. It covers each tool (click-click and drag), arc bend direction, circle roundness on screen, polyline finish rules, snapping, select (pixel picking, box select, shift, move, handle and edge drags), undo, fill on non-rectangular shapes (including nested), fill display pixels, delete, shortcuts, wheel and trackpad navigation, and ruler scrub and loop. Screenshots are in `SYNTHESIS_SHOTS=<dir> cargo test -p synthesis-app screenshots`.
+
+**Not done / limits.** Screenshots were inspected by eye, not compared to Onshape. Audible playback was not checked by ear. Constraints (CONSTR-*) are still not implemented.
+
+## M3 rework test results (2026-11-17, macOS arm64)
+
+- `cargo fmt --all -- --check`: pass.
+- `cargo build --workspace`: pass.
+- `cargo test --workspace`: pass. Engine 74 unit and 10 acceptance. App 39 unit, including 24 UI interaction tests and 1 screenshot test.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
+- Release build starts and stays up 6 s with no stderr.
+
 ## Proposed
 
 _None yet._
