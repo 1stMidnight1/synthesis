@@ -71,6 +71,20 @@ pub struct CanvasState {
     /// Drag start for two-point tools (line, rectangle, circle, ellipse).
     pub drag_start: Option<Point>,
     pub status: String,
+    /// Index of the selected shape in the selected voice (Select tool).
+    pub selected: Option<usize>,
+    /// Active Select-tool drag: what is being dragged and where it started.
+    pub select_drag: Option<SelectDrag>,
+}
+
+/// An in-progress move or resize. Changes stay in the drag until release,
+/// so one drag is one undo step.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SelectDrag {
+    /// Move the selected shape. `origin` is the pointer position at drag start.
+    Move { origin: Point },
+    /// Resize from a corner handle, keeping `anchor` fixed.
+    Resize { anchor: Point, origin: Point },
 }
 
 impl CanvasState {
@@ -148,11 +162,26 @@ pub fn show(ui: &mut Ui, doc: &mut Document, state: &mut CanvasState, a4: f64) -
     }
 
     draw_grid(&painter, rect, state, doc);
-    draw_shapes(&painter, rect, doc, a4);
+    let preview = match (
+        state.select_drag,
+        state.selected,
+        state.tool,
+        response.interact_pointer_pos(),
+    ) {
+        (Some(drag), Some(si), Tool::Select, Some(pos)) => {
+            let end = maybe_snap(screen_to_point(pos, rect, doc.time, doc.pitch, a4), state);
+            Some((doc.selected_voice, si, drag, end, state.snap))
+        }
+        _ => None,
+    };
+    draw_shapes_with(&painter, rect, doc, a4, preview);
+    draw_selection(&painter, rect, doc, state, a4);
     draw_pending(&painter, rect, doc, state, a4);
 
     // Tool input (left button).
-    if let Some(pos) = response.interact_pointer_pos() {
+    if state.tool == Tool::Select {
+        handle_select(ui, &response, rect, doc, state, a4);
+    } else if let Some(pos) = response.interact_pointer_pos() {
         let p = maybe_snap(screen_to_point(pos, rect, doc.time, doc.pitch, a4), state);
         if response.clicked_by(egui::PointerButton::Primary) {
             handle_click(doc, state, p);
@@ -232,10 +261,27 @@ fn draw_grid(painter: &egui::Painter, rect: Rect, state: &CanvasState, doc: &Doc
     }
 }
 
-fn draw_shapes(painter: &egui::Painter, rect: Rect, doc: &Document, a4: f64) {
+/// Draw all shapes. If `preview` is `(voice, shape, drag, end)`, that shape is
+/// drawn where the in-progress drag would put it.
+pub fn draw_shapes_with(
+    painter: &egui::Painter,
+    rect: Rect,
+    doc: &Document,
+    a4: f64,
+    preview: Option<(usize, usize, SelectDrag, Point, bool)>,
+) {
     for (vi, voice) in doc.scene.voices.iter().enumerate() {
         let color = voice_color(vi);
-        for shape in &voice.shapes {
+        for (si, base) in voice.shapes.iter().enumerate() {
+            let shape_owned;
+            let shape = match preview {
+                Some((pv, ps, drag, end, snap)) if pv == vi && ps == si => {
+                    shape_owned =
+                        drag_result(base, drag, end, snap).unwrap_or_else(|_| base.clone());
+                    &shape_owned
+                }
+                _ => base,
+            };
             for seg in shape.edges() {
                 let a = point_to_screen(seg.a, rect, doc.time, doc.pitch, a4);
                 let b = point_to_screen(seg.b, rect, doc.time, doc.pitch, a4);
@@ -274,6 +320,43 @@ fn draw_fill(
     painter.rect_filled(Rect::from_min_max(min, max), 0.0, tint);
 }
 
+/// Outline and corner handles around the selected shape (CANVAS-07).
+fn draw_selection(
+    painter: &egui::Painter,
+    rect: Rect,
+    doc: &Document,
+    state: &CanvasState,
+    a4: f64,
+) {
+    let Some(si) = state.selected else {
+        return;
+    };
+    let Some(shape) = doc
+        .scene
+        .voices
+        .get(doc.selected_voice)
+        .and_then(|v| v.shapes.get(si))
+    else {
+        return;
+    };
+    let Some((lo, hi)) = bounds(shape) else {
+        return;
+    };
+    let accent = Color32::from_rgb(255, 210, 90);
+    let a = point_to_screen(lo, rect, doc.time, doc.pitch, a4);
+    let b = point_to_screen(hi, rect, doc.time, doc.pitch, a4);
+    painter.rect_stroke(
+        Rect::from_two_pos(a, b),
+        0.0,
+        Stroke::new(1.0, accent),
+        StrokeKind::Outside,
+    );
+    for c in corners(lo, hi) {
+        let p = point_to_screen(c, rect, doc.time, doc.pitch, a4);
+        painter.rect_filled(Rect::from_center_size(p, Vec2::splat(7.0)), 1.0, accent);
+    }
+}
+
 fn draw_pending(painter: &egui::Painter, rect: Rect, doc: &Document, state: &CanvasState, a4: f64) {
     let stroke = Stroke::new(1.5, Color32::WHITE);
     let pts: Vec<Pos2> = state
@@ -309,6 +392,195 @@ fn voice_color(index: usize) -> Color32 {
         Color32::from_rgb(90, 220, 200),
     ];
     PALETTE[index % PALETTE.len()]
+}
+
+/// Bounding box of a shape's vertices in (time, pitch).
+pub fn bounds(shape: &Shape) -> Option<(Point, Point)> {
+    let (verts, _) = shape.vertices();
+    let first = verts.first()?;
+    let mut lo = *first;
+    let mut hi = *first;
+    for v in &verts {
+        lo.t = lo.t.min(v.t);
+        lo.st = lo.st.min(v.st);
+        hi.t = hi.t.max(v.t);
+        hi.st = hi.st.max(v.st);
+    }
+    Some((lo, hi))
+}
+
+/// Corner positions of a bounding box, in the order used by [`hit_handle`].
+pub fn corners(lo: Point, hi: Point) -> [Point; 4] {
+    [
+        Point::new(lo.t, lo.st),
+        Point::new(hi.t, lo.st),
+        Point::new(hi.t, hi.st),
+        Point::new(lo.t, hi.st),
+    ]
+}
+
+/// Index of the shape under `p` (closed interior, or near an edge), topmost first.
+pub fn pick_shape(shapes: &[Shape], p: Point) -> Option<usize> {
+    shapes
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, s)| (s.is_closed() && s.filled && contains_point(s, p)) || hit_shape(s, p))
+        .map(|(i, _)| i)
+}
+
+/// Whether a corner handle sits under `p`, given a screen-space tolerance.
+pub fn hit_handle(lo: Point, hi: Point, p: Point, tol_t: f64, tol_st: f64) -> Option<usize> {
+    corners(lo, hi)
+        .iter()
+        .position(|c| (c.t - p.t).abs() <= tol_t && (c.st - p.st).abs() <= tol_st)
+}
+
+/// Select tool: click to select, drag a corner handle to resize, drag the
+/// body to move. The shape changes only on release, as one undo step.
+fn handle_select(
+    ui: &Ui,
+    response: &Response,
+    rect: Rect,
+    doc: &mut Document,
+    state: &mut CanvasState,
+    a4: f64,
+) {
+    let idx = doc.selected_voice;
+    let Some(pos) = response.interact_pointer_pos() else {
+        return;
+    };
+    let raw = screen_to_point(pos, rect, doc.time, doc.pitch, a4);
+    let p = maybe_snap(raw, state);
+
+    // Tolerances for handle and pick, in time and pitch units from pixels.
+    let px_t = doc.time.width_s / f64::from(rect.width());
+    let px_st = {
+        let lo = raw;
+        let hi = screen_to_point(Pos2::new(pos.x, pos.y - 1.0), rect, doc.time, doc.pitch, a4);
+        (hi.st - lo.st).abs().max(1e-6)
+    };
+    let handle_tol_t = px_t * 6.0;
+    let handle_tol_st = px_st * 6.0;
+
+    if response.drag_started_by(egui::PointerButton::Primary) {
+        let shapes = doc
+            .scene
+            .voices
+            .get(idx)
+            .map(|v| v.shapes.as_slice())
+            .unwrap_or(&[]);
+        // A handle on the selected shape starts a resize; otherwise pick a shape to move.
+        let selected_bounds = state
+            .selected
+            .and_then(|si| shapes.get(si))
+            .and_then(bounds);
+        let handle = selected_bounds.and_then(|(lo, hi)| {
+            hit_handle(lo, hi, raw, handle_tol_t, handle_tol_st).map(|c| (lo, hi, c))
+        });
+        if let (Some((lo, hi, corner)), Some(_)) = (handle, state.selected) {
+            let anchor = corners(lo, hi)[(corner + 2) % 4];
+            state.select_drag = Some(SelectDrag::Resize {
+                anchor,
+                origin: raw,
+            });
+        } else {
+            state.selected = pick_shape(shapes, raw);
+            state.select_drag = state.selected.map(|_| SelectDrag::Move { origin: raw });
+        }
+    }
+
+    // Live preview is drawn from the in-progress delta; the shape is committed on release.
+    if response.drag_stopped_by(egui::PointerButton::Primary)
+        && let (Some(drag), Some(si)) = (state.select_drag.take(), state.selected)
+    {
+        commit_select(doc, state, drag, idx, si, p);
+    }
+
+    // Escape cancels a drag without committing.
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.select_drag = None;
+    }
+
+    // Clicking empty space clears the selection.
+    if response.clicked_by(egui::PointerButton::Primary) && state.select_drag.is_none() {
+        let shapes = doc
+            .scene
+            .voices
+            .get(idx)
+            .map(|v| v.shapes.as_slice())
+            .unwrap_or(&[]);
+        state.selected = pick_shape(shapes, raw);
+    }
+}
+
+/// The shape a Select drag would produce if released at `end`. Used for both
+/// the live preview and the committed edit, so the two always agree.
+pub fn drag_result(
+    shape: &Shape,
+    drag: SelectDrag,
+    end: Point,
+    snap: bool,
+) -> Result<Shape, String> {
+    match drag {
+        SelectDrag::Move { origin } => {
+            let dt = end.t - origin.t;
+            let dst = if snap {
+                (end.st - origin.st).round()
+            } else {
+                end.st - origin.st
+            };
+            synthesis_engine::transform::translate(shape, dt, dst).map_err(|e| e.to_string())
+        }
+        SelectDrag::Resize { anchor, origin } => {
+            let dt_origin = origin.t - anchor.t;
+            let dst_origin = origin.st - anchor.st;
+            let sx = if dt_origin.abs() < 1e-9 {
+                1.0
+            } else {
+                (end.t - anchor.t) / dt_origin
+            };
+            let sy = if dst_origin.abs() < 1e-9 {
+                1.0
+            } else {
+                (end.st - anchor.st) / dst_origin
+            };
+            if !(sx.is_finite() && sy.is_finite()) || sx.abs() < 1e-3 || sy.abs() < 1e-3 {
+                return Err("resize too small".into());
+            }
+            synthesis_engine::transform::scale(shape, anchor, sx, sy).map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// Apply a finished Select drag to the document as one undo step.
+fn commit_select(
+    doc: &mut Document,
+    state: &mut CanvasState,
+    drag: SelectDrag,
+    voice: usize,
+    shape_idx: usize,
+    end: Point,
+) {
+    let Some(shape) = doc
+        .scene
+        .voices
+        .get(voice)
+        .and_then(|v| v.shapes.get(shape_idx))
+        .cloned()
+    else {
+        return;
+    };
+    let result = drag_result(&shape, drag, end, state.snap);
+    match result {
+        Ok(new_shape) => {
+            doc.edit(|s| {
+                s.voices[voice].shapes[shape_idx] = new_shape;
+            });
+            state.status = "Shape updated".into();
+        }
+        Err(e) => state.status = format!("Edit rejected: {e}"),
+    }
 }
 
 /// A single click: adds a point for polyline and polygon, or runs the
@@ -526,6 +798,80 @@ mod tests {
         // Click outside any shape changes nothing.
         handle_click(&mut doc, &mut state, Point::new(9.0, 62.0));
         assert!(!doc.scene.voices[0].shapes[0].filled);
+    }
+
+    fn rect_shape() -> Shape {
+        Shape::outline(synthesis_engine::Geometry::Rectangle {
+            a: Point::new(1.0, 60.0),
+            b: Point::new(3.0, 64.0),
+        })
+        .unwrap()
+    }
+
+    /// Move: the result is the original shifted by the pointer's delta.
+    #[test]
+    fn select_move_applies_pointer_delta() {
+        let drag = SelectDrag::Move {
+            origin: Point::new(2.0, 62.0),
+        };
+        let moved = drag_result(&rect_shape(), drag, Point::new(2.5, 65.0), true).unwrap();
+        let (v, _) = moved.vertices();
+        assert!((v[0].t - 1.5).abs() < 1e-9);
+        assert!((v[0].st - 63.0).abs() < 1e-9);
+    }
+
+    /// Resize: the corner opposite the handle stays fixed and the handle follows the pointer.
+    #[test]
+    fn select_resize_keeps_anchor_and_follows_pointer() {
+        let anchor = Point::new(1.0, 60.0);
+        let origin = Point::new(3.0, 64.0); // grabbed the far corner
+        let drag = SelectDrag::Resize { anchor, origin };
+        let resized = drag_result(&rect_shape(), drag, Point::new(5.0, 68.0), false).unwrap();
+        let (v, _) = resized.vertices();
+        assert!((v[0].t - 1.0).abs() < 1e-9, "anchor time fixed");
+        assert!((v[0].st - 60.0).abs() < 1e-9, "anchor pitch fixed");
+        assert!(
+            (v[2].t - 5.0).abs() < 1e-9,
+            "handle follows pointer in time"
+        );
+        assert!(
+            (v[2].st - 68.0).abs() < 1e-9,
+            "handle follows pointer in pitch"
+        );
+    }
+
+    /// A resize that collapses the shape is rejected, not applied.
+    #[test]
+    fn select_resize_to_zero_is_rejected() {
+        let drag = SelectDrag::Resize {
+            anchor: Point::new(1.0, 60.0),
+            origin: Point::new(3.0, 64.0),
+        };
+        assert!(drag_result(&rect_shape(), drag, Point::new(1.0, 64.0), false).is_err());
+    }
+
+    #[test]
+    fn bounds_and_handles_are_consistent() {
+        let (lo, hi) = bounds(&rect_shape()).unwrap();
+        assert_eq!((lo.t, lo.st), (1.0, 60.0));
+        assert_eq!((hi.t, hi.st), (3.0, 64.0));
+        let corner = hit_handle(lo, hi, Point::new(3.0, 64.0), 0.05, 0.5);
+        assert_eq!(corner, Some(2), "far corner is handle index 2");
+        assert_eq!(hit_handle(lo, hi, Point::new(2.0, 62.0), 0.05, 0.5), None);
+    }
+
+    #[test]
+    fn pick_shape_chooses_the_topmost_hit() {
+        let a = rect_shape();
+        let b = Shape::filled(synthesis_engine::Geometry::Rectangle {
+            a: Point::new(0.0, 58.0),
+            b: Point::new(4.0, 66.0),
+        })
+        .unwrap();
+        let shapes = [a, b];
+        // Inside both, the later (topmost) one wins.
+        assert_eq!(pick_shape(&shapes, Point::new(2.0, 62.0)), Some(1));
+        assert_eq!(pick_shape(&shapes, Point::new(9.0, 62.0)), None);
     }
 
     #[test]
