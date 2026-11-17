@@ -88,8 +88,8 @@ fn ramp_toward(gain: f64, target: f64, step: f64) -> f64 {
 }
 
 /// Synth state for one voice. Produces a mono sample; L/R gains are applied by the renderer (R6).
-pub struct VoiceSynth<'a> {
-    voice: &'a Voice,
+pub struct VoiceSynth {
+    voice: Voice,
     sr: f64,
     a4_hz: f64,
     ramp_step: f64,
@@ -108,9 +108,9 @@ pub struct VoiceSynth<'a> {
     lat_target: Vec<f64>,
 }
 
-impl<'a> VoiceSynth<'a> {
-    /// Prepare synth state for `voice`. `settings` must already be validated.
-    pub fn new(voice: &'a Voice, settings: &Settings) -> Self {
+impl VoiceSynth {
+    /// Prepare synth state for `voice`, taking ownership. `settings` must already be validated.
+    pub fn owned(voice: Voice, settings: &Settings) -> Self {
         let sr = f64::from(settings.sample_rate);
         let ramp_samples = (settings.ramp_ms * 1e-3 * sr).max(1.0);
 
@@ -257,15 +257,15 @@ mod tests {
     #[test]
     fn lattice_size_follows_density() {
         let voice = Voice::new("v");
-        let fine = VoiceSynth::new(
-            &voice,
+        let fine = VoiceSynth::owned(
+            voice.clone(),
             &Settings {
                 density_cents: 5.0,
                 ..Settings::default()
             },
         );
-        let coarse = VoiceSynth::new(
-            &voice,
+        let coarse = VoiceSynth::owned(
+            voice,
             &Settings {
                 density_cents: 20.0,
                 ..Settings::default()
