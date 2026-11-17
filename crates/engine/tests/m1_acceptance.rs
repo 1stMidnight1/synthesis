@@ -1,0 +1,265 @@
+//! M1 acceptance tests (PLAN.md §9), run on real offline renders.
+//!
+//! Each test renders a scene and checks its spectrum with an FFT. Tests use a
+//! Hann window and rustfft. Frequencies are compared at the window's bin
+//! resolution, so the 1 Hz tolerance in test 1 is met by a 1 s window at 48 kHz.
+
+use std::f64::consts::PI;
+use std::sync::Arc;
+
+use rustfft::{FftPlanner, num_complex::Complex};
+use synthesis_engine::geometry::{Geometry, Point};
+use synthesis_engine::model::{Scene, Settings, Voice};
+use synthesis_engine::pitch::hz_to_st;
+use synthesis_engine::{Shape, render_scene};
+
+const SR: u32 = 48_000;
+const A4: f64 = 440.0;
+
+fn st(hz: f64) -> f64 {
+    hz_to_st(hz, A4)
+}
+
+fn settings() -> Settings {
+    Settings {
+        sample_rate: SR,
+        master_gain: 1.0,
+        ..Settings::default()
+    }
+}
+
+/// Magnitude spectrum of `x` with a Hann window, zero-padded to `n` points.
+fn spectrum(x: &[f32]) -> Vec<f64> {
+    let n = x.len();
+    let mut buf: Vec<Complex<f64>> = x
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            let w = 0.5 - 0.5 * (2.0 * PI * i as f64 / n as f64).cos();
+            Complex::new(f64::from(s) * w, 0.0)
+        })
+        .collect();
+    let mut planner = FftPlanner::<f64>::new();
+    let fft: Arc<dyn rustfft::Fft<f64>> = planner.plan_fft_forward(n);
+    fft.process(&mut buf);
+    buf[..n / 2].iter().map(|c| c.norm()).collect()
+}
+
+/// Frequency of bin `k` for an `n`-point FFT at sample rate `SR`.
+fn bin_hz(k: usize, n: usize) -> f64 {
+    k as f64 * f64::from(SR) / n as f64
+}
+
+/// Local maxima above `floor` (relative to the global max), as Hz.
+fn peaks_hz(mag: &[f64], n: usize, floor_rel: f64) -> Vec<f64> {
+    let max = mag.iter().cloned().fold(0.0, f64::max);
+    let mut out = Vec::new();
+    for k in 1..mag.len() - 1 {
+        if mag[k] > floor_rel * max && mag[k] >= mag[k - 1] && mag[k] > mag[k + 1] {
+            out.push(bin_hz(k, n));
+        }
+    }
+    out
+}
+
+fn energy_in(mag: &[f64], n: usize, lo_hz: f64, hi_hz: f64) -> f64 {
+    mag.iter()
+        .enumerate()
+        .filter(|&(k, _)| {
+            let f = bin_hz(k, n);
+            f >= lo_hz && f <= hi_hz
+        })
+        .map(|(_, &m)| m * m)
+        .sum()
+}
+
+fn scene_with(duration_s: f64, shape: Shape) -> Scene {
+    let mut scene = Scene::new(duration_s, settings());
+    scene.voices.push(Voice::new("v").with_shape(shape));
+    scene
+}
+
+/// Test 1: a flat 450 Hz line for 1 s peaks at 450 Hz within 1 Hz.
+#[test]
+fn flat_line_peaks_at_450_hz_within_1_hz() {
+    let shape = Shape::outline(Geometry::Line {
+        a: Point::new(0.0, st(450.0)),
+        b: Point::new(1.0, st(450.0)),
+    })
+    .unwrap();
+    let out = render_scene(&scene_with(1.0, shape)).unwrap();
+    let n = 1 << 17; // 131072-point FFT over the 48 000-sample render, zero-padded
+    let mut x = out.left.clone();
+    x.resize(n, 0.0);
+    let mag = spectrum(&x);
+    let max_k = mag
+        .iter()
+        .enumerate()
+        .take(mag.len())
+        .skip(1)
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .unwrap()
+        .0;
+    let f = bin_hz(max_k, n);
+    assert!((f - 450.0).abs() <= 1.0, "peak at {f} Hz, expected 450 ± 1");
+}
+
+/// Test 2: a rectangle outline 200–400 Hz for 1 s has two steady pitch peaks.
+#[test]
+fn rectangle_outline_has_two_steady_peaks() {
+    let shape = Shape::outline(Geometry::Rectangle {
+        a: Point::new(0.0, st(200.0)),
+        b: Point::new(1.0, st(400.0)),
+    })
+    .unwrap();
+    let out = render_scene(&scene_with(1.0, shape)).unwrap();
+    let n = 1 << 17;
+    let mut x = out.left.clone();
+    x.resize(n, 0.0);
+    let mag = spectrum(&x);
+    let peaks = peaks_hz(&mag, n, 0.1);
+    let near = |target: f64| peaks.iter().any(|&p| (p - target).abs() <= 1.5);
+    assert!(near(200.0), "no peak near 200 Hz: {peaks:?}");
+    assert!(near(400.0), "no peak near 400 Hz: {peaks:?}");
+    // No other strong peaks besides the two edges and the short vertical bursts.
+    let strong: Vec<f64> = peaks
+        .iter()
+        .copied()
+        .filter(|&p| (p - 200.0).abs() > 1.5 && (p - 400.0).abs() > 1.5)
+        .filter(|&p| {
+            let k = (p * n as f64 / f64::from(SR)).round() as usize;
+            mag[k] > 0.3 * mag.iter().cloned().fold(0.0, f64::max)
+        })
+        .collect();
+    assert!(strong.is_empty(), "unexpected strong peaks: {strong:?}");
+}
+
+/// Test 3: a filled rectangle has energy across its band, between the edges.
+#[test]
+fn filled_rectangle_has_energy_across_band() {
+    let shape = Shape::filled(Geometry::Rectangle {
+        a: Point::new(0.0, st(200.0)),
+        b: Point::new(1.0, st(400.0)),
+    })
+    .unwrap();
+    let out = render_scene(&scene_with(1.0, shape)).unwrap();
+    let n = 1 << 17;
+    let mut x = out.left.clone();
+    x.resize(n, 0.0);
+    let mag = spectrum(&x);
+    let inside = energy_in(&mag, n, 220.0, 380.0);
+    let outside = energy_in(&mag, n, 0.0, 180.0) + energy_in(&mag, n, 420.0, 2000.0);
+    assert!(inside > 0.0);
+    assert!(
+        inside > 20.0 * outside,
+        "band energy {inside} not dominant over outside {outside}"
+    );
+    // Energy spreads across the band, not only at its edges.
+    let mid = energy_in(&mag, n, 280.0, 320.0);
+    assert!(mid > 0.01 * inside, "no energy mid-band: {mid} of {inside}");
+}
+
+/// Test 4: a vertical line at t = 0.5 s is a short burst containing its whole span.
+#[test]
+fn vertical_line_is_burst_containing_whole_span() {
+    let shape = Shape::outline(Geometry::Line {
+        a: Point::new(0.5, st(200.0)),
+        b: Point::new(0.5, st(800.0)),
+    })
+    .unwrap();
+    let out = render_scene(&scene_with(1.0, shape)).unwrap();
+    let on: Vec<usize> = out
+        .left
+        .iter()
+        .enumerate()
+        .filter(|&(_, s)| s.abs() > 1e-4)
+        .map(|(i, _)| i)
+        .collect();
+    assert!(!on.is_empty(), "vertical line produced no sound");
+    let first = *on.first().unwrap() as f64 / f64::from(SR);
+    let last = *on.last().unwrap() as f64 / f64::from(SR);
+    assert!(
+        first >= 0.5 - 1e-3 && last <= 0.5 + 0.02,
+        "burst at {first}..{last}"
+    );
+    assert!(last - first < 0.02, "burst too long: {}", last - first);
+
+    // Whole span: energy near both ends of the 200–800 Hz span, within the burst.
+    let (s, e) = (on[0], *on.last().unwrap() + 1);
+    let seg = &out.left[s..e];
+    let n = seg.len().next_power_of_two().max(256);
+    let mut x = seg.to_vec();
+    x.resize(n, 0.0);
+    let mag = spectrum(&x);
+    let low = energy_in(&mag, n, 180.0, 300.0);
+    let high = energy_in(&mag, n, 600.0, 820.0);
+    let total = energy_in(&mag, n, 0.0, 24_000.0);
+    assert!(low > 0.01 * total, "no energy at span bottom");
+    assert!(high > 0.01 * total, "no energy at span top");
+}
+
+/// Test 5: a gap renders silence.
+#[test]
+fn gap_renders_silence() {
+    let a = Shape::outline(Geometry::Line {
+        a: Point::new(0.0, st(450.0)),
+        b: Point::new(0.3, st(450.0)),
+    })
+    .unwrap();
+    let b = Shape::outline(Geometry::Line {
+        a: Point::new(0.7, st(450.0)),
+        b: Point::new(1.0, st(450.0)),
+    })
+    .unwrap();
+    let mut scene = Scene::new(1.0, settings());
+    scene
+        .voices
+        .push(Voice::new("v").with_shape(a).with_shape(b));
+    let out = render_scene(&scene).unwrap();
+    // Gate ramps are ~2 ms, so check the middle of the gap well away from edges.
+    let from = (0.35 * f64::from(SR)) as usize;
+    let to = (0.65 * f64::from(SR)) as usize;
+    let peak = out.left[from..to]
+        .iter()
+        .fold(0.0f32, |m, &s| m.max(s.abs()));
+    assert!(peak < 1e-6, "gap not silent: peak {peak}");
+}
+
+/// Rendering is repeatable: the same scene gives byte-identical output.
+#[test]
+fn rendering_is_deterministic() {
+    let shape = Shape::filled(Geometry::Rectangle {
+        a: Point::new(0.0, st(200.0)),
+        b: Point::new(0.5, st(400.0)),
+    })
+    .unwrap();
+    let scene = scene_with(0.5, shape);
+    let a = render_scene(&scene).unwrap();
+    let b = render_scene(&scene).unwrap();
+    assert_eq!(a, b);
+}
+
+/// ENGINE-07: a filled band's RMS level does not depend on lattice density.
+#[test]
+fn band_loudness_is_independent_of_density() {
+    let shape = Shape::filled(Geometry::Rectangle {
+        a: Point::new(0.0, st(200.0)),
+        b: Point::new(1.0, st(400.0)),
+    })
+    .unwrap();
+    let rms = |density: f64| {
+        let mut scene = scene_with(1.0, shape.clone());
+        scene.settings.density_cents = density;
+        let out = render_scene(&scene).unwrap();
+        // Skip the first and last 50 ms to avoid edge effects.
+        let s = &out.left[2_400..out.left.len() - 2_400];
+        (s.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / s.len() as f64).sqrt()
+    };
+    let fine = rms(5.0);
+    let coarse = rms(20.0);
+    let db = 20.0 * (fine / coarse).log10();
+    assert!(
+        db.abs() < 1.0,
+        "loudness differs by {db:.2} dB across density"
+    );
+}
