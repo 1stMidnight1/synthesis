@@ -119,6 +119,33 @@ All set to the plan's listed default, status **default** (change any by telling 
 - `cargo clippy --workspace --all-targets -- -D warnings`: pass.
 - `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
 
+## M3 design (2026-11-17)
+
+- **Block renderer.** `SceneRenderer` keeps oscillator and gate state across calls, so playback pulls consecutive blocks without restarting phase. `render_scene` is one long block. A test confirms blocks equal an offline render exactly, so playback and export agree.
+- **Owned voices.** `VoiceSynth` owns its `Voice`, so the renderer doesn't borrow the scene. This is needed for a long-lived background renderer.
+- **Background render thread (TRANS-04).** A `std::thread` owns the renderer, receives commands over a channel, and fills an `rtrb` SPSC ring about 0.25 s ahead. The audio callback only pops frames and applies a 5 ms gain fade. It never renders, allocates, or locks. On a new scene or stop, a generation counter makes the audio callback drop stale frames.
+- **Transport (TRANS-01 to 03).** Engine math: loop wrap, tempo position (bar, beat, sixteenth, 4/4), grid subdivisions. Playhead is advanced by wall time in the UI.
+- **Pitch scale (R8).** Semitone and Log Hz are both log in Hz and differ only in labels. Linear Hz is linear. A4 is configurable. Drawing is not snapped to notes; snap rounds time to the grid and pitch to the nearest semitone only when snap is on.
+- **Undo (CANVAS-05).** Snapshot-based: each edit stores the prior scene. An edit that leaves the scene invalid is rolled back and not recorded.
+- **Canvas.** Pan (middle-drag), zoom (wheel), and shape tools for line, polyline, rectangle, circle, ellipse, arc, polygon, select, delete. Fill mode for new closed shapes (CANVAS-03). Fill is drawn as a tint over the bounding box for now; exact fill rendering is a later polish item.
+- **Export.** WAV from the UI through `rfd` native save dialog, 24-bit, rendered through the same engine path.
+
+**Known gaps in M3 (not hidden):**
+- Fill (CANVAS-03): the Fill tool toggles the closed shape under the click (even-odd inside test). The "fill new shapes" checkbox sets the default for new shapes. Implemented.
+- Loop region (TRANS-02) is a loop-to-duration toggle, not a user-set range.
+- Time is shown in seconds and bars/beats (TRANS-03). The loop and export range picker (OUT-04) are not implemented.
+- Fill is drawn as a bounding-box tint, not a true filled-region shape. This is display-only; the engine renders true bands (R1).
+- Select/move/resize (CANVAS-07) and a user-set loop range (TRANS-02) are open. Until they are done, the M3 acceptance sentence is only partly met.
+
+## M3 test results (2026-11-17, macOS arm64)
+
+- `cargo fmt --all -- --check`: pass.
+- `cargo build --workspace`: pass. `cargo build -p synthesis-app --release`: pass.
+- `cargo test --workspace`: pass. Engine 50 unit, 10 acceptance (including block-vs-offline and reset). App 6 unit (screen mapping round-trip in all three scales, axis orientation, snapping, undo/redo, rollback) and 2 render-thread tests (Load produces buffered energy, Stop clears running). Includes fill-tool toggle inside/outside tests.
+- `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
+- App launch: the release binary starts and stays running for 6 seconds with no stderr output. Interactive drawing and audible playback were NOT verified by a person.
+
 ## Proposed
 
 _None yet._
