@@ -30,7 +30,7 @@ use eframe::egui::{
 use synthesis_engine::pitchscale::{PitchScale, note_name};
 use synthesis_engine::sampling::fill_bands_edges;
 use synthesis_engine::sketch::{self, Handle, HandleKind};
-use synthesis_engine::{Geometry, Point, Shape, Subdivision, Tempo};
+use synthesis_engine::{Division, Geometry, Point, Shape, Tempo};
 
 use crate::document::Document;
 use crate::view::{self, View};
@@ -160,7 +160,10 @@ pub struct CanvasState {
     pub snap: bool,
     pub show_grid: bool,
     pub bpm: f64,
-    pub subdivision: Subdivision,
+    /// X grid: a `1/N` fraction of a beat (snap and grid lines).
+    pub x_div: Division,
+    /// Y grid: a `1/N` fraction of a semitone (or of an octave in Hz modes).
+    pub y_div: Division,
     pub polygon_sides: usize,
     /// Points placed so far by the active drawing tool.
     pub pending: Vec<Point>,
@@ -189,7 +192,8 @@ impl Default for CanvasState {
             snap: true,
             show_grid: true,
             bpm: 120.0,
-            subdivision: Subdivision::Sixteenth,
+            x_div: Division::new(16).unwrap(),
+            y_div: Division::new(1).unwrap(),
             polygon_sides: sketch::DEFAULT_POLYGON_SIDES,
             pending: Vec::new(),
             selected: BTreeSet::new(),
@@ -392,7 +396,7 @@ pub fn snap(
     }
     let t = match Tempo::new(state.bpm) {
         Some(tempo) => {
-            let step = state.subdivision.step_s(tempo);
+            let step = state.x_div.x_step_s(tempo);
             // Don't snap to grid lines closer than 4 px apart.
             if step / v.s_per_px() >= 4.0 {
                 (raw.t / step).round() * step
@@ -402,12 +406,26 @@ pub fn snap(
         }
         None => raw.t,
     };
-    let st = if v.st_per_px(pos.y) <= 0.25 {
-        raw.st.round()
-    } else {
-        raw.st
+    (
+        Point::new(t, snap_pitch(raw.st, v, state.y_div, pos.y)),
+        false,
+    )
+}
+
+/// Snap a pitch (fractional MIDI) to the Y division. In semitone mode the step
+/// is `1/N` semitone; in the Hz modes it is `1/N` octave, which is the same
+/// grid on a log axis. Skipped when the step is smaller than 4 screen points.
+pub fn snap_pitch(st: f64, v: &View, y: Division, screen_y: f32) -> f64 {
+    let step = match v.pitch.scale {
+        PitchScale::Semitones => y.y_step_st(),
+        PitchScale::LogHz | PitchScale::LinearHz => {
+            12.0 * synthesis_engine::grid::y_step_octaves(y)
+        }
     };
-    (Point::new(t, st), false)
+    if step / v.st_per_px(screen_y) < 4.0 {
+        return st;
+    }
+    (st / step).round() * step
 }
 
 // ---------------------------------------------------------------------------
@@ -1204,7 +1222,7 @@ fn paint_grid(p: &egui::Painter, v: &View, state: &CanvasState) {
     {
         let beat_s = tempo.beat_s();
         let bar_s = beat_s * Tempo::BEATS_PER_BAR;
-        let sub_s = state.subdivision.step_s(tempo);
+        let sub_s = state.x_div.x_step_s(tempo);
         let first = (v.time.start_s.max(0.0) / sub_s).floor() as i64;
         let last = ((v.time.start_s + v.time.width_s) / sub_s).ceil() as i64;
         let dense = sub_s / v.s_per_px() < 6.0;
@@ -1232,49 +1250,70 @@ fn paint_grid(p: &egui::Painter, v: &View, state: &CanvasState) {
         }
     }
 
-    // Pitch grid: semitones, with octaves (C) emphasised and labelled (GRID-04).
-    let lo = v.st_of(r.bottom()).floor() as i32;
-    let hi = v.st_of(r.top()).ceil() as i32;
-    let px_per_st = 1.0 / v.st_per_px(r.center().y) as f32;
-    for midi in lo..=hi {
-        let y = v.y_of(f64::from(midi));
+    // Pitch grid at the Y division (GRID-03). Octaves (C notes in semitone
+    // mode) are emphasised and labelled. Finer lines show when they have room.
+    let (lo_st, hi_st) = (v.st_of(r.bottom()), v.st_of(r.top()));
+    let step = match v.pitch.scale {
+        PitchScale::Semitones => state.y_div.y_step_st(),
+        PitchScale::LogHz | PitchScale::LinearHz => {
+            12.0 * synthesis_engine::grid::y_step_octaves(state.y_div)
+        }
+    };
+    let px_per_step = (step / v.st_per_px(r.center().y)) as f32;
+    let label_every = if px_per_step >= 24.0 {
+        1
+    } else {
+        (24.0 / px_per_step).ceil() as i64
+    };
+    let first = (lo_st / step).floor() as i64;
+    let last = (hi_st / step).ceil() as i64;
+    for i in first..=last {
+        let st = i as f64 * step;
+        let y = v.y_of(st);
         if y < r.top() || y > r.bottom() {
             continue;
         }
-        let is_c = midi.rem_euclid(12) == 0;
-        if state.show_grid && (is_c || px_per_st >= 5.0) {
+        // An octave is a C (a multiple of 12 semitones on the MIDI axis).
+        let midi = st.round() as i32;
+        let on_semitone = (st - st.round()).abs() < 1e-9;
+        let is_octave = on_semitone && midi.rem_euclid(12) == 0;
+        if state.show_grid && (px_per_step >= 4.0 || is_octave) {
             p.line_segment(
                 [Pos2::new(r.left(), y), Pos2::new(r.right(), y)],
-                if is_c { octave } else { minor },
+                if is_octave { octave } else { minor },
             );
         }
-        let label = match v.pitch.scale {
-            PitchScale::Semitones => (is_c || px_per_st >= 14.0).then(|| note_name(midi)),
-            PitchScale::LogHz | PitchScale::LinearHz => is_c.then(|| {
-                format!(
-                    "{:.0} Hz",
-                    synthesis_engine::pitch::st_to_hz(f64::from(midi), v.a4)
-                )
-            }),
+        let labelled = is_octave || i.rem_euclid(label_every) == 0;
+        if !labelled {
+            continue;
+        }
+        let text = match v.pitch.scale {
+            PitchScale::Semitones => {
+                if on_semitone {
+                    note_name(midi)
+                } else {
+                    format!("{:+.0}c", (st - st.round()) * 100.0)
+                }
+            }
+            PitchScale::LogHz | PitchScale::LinearHz => {
+                format!("{:.0} Hz", synthesis_engine::pitch::st_to_hz(st, v.a4))
+            }
         };
-        if let Some(text) = label {
-            p.text(
-                Pos2::new(r.left() + 4.0, y - 1.0),
-                egui::Align2::LEFT_BOTTOM,
-                text,
-                egui::FontId::monospace(10.0),
-                Color32::from_gray(if is_c { 170 } else { 110 }),
-            );
-        }
-    }
-
-    // Timeline start and end.
-    let x0 = v.x_of(0.0);
-    if x0 > r.left() {
-        p.rect_filled(
-            Rect::from_min_max(r.left_top(), Pos2::new(x0, r.bottom())),
-            0.0,
-            Color32::from_gray(14),
+        let pos = Pos2::new(r.left() + 4.0, y - 2.0);
+        let galley = p.layout_no_wrap(
+            text,
+            egui::FontId::monospace(12.0),
+            Color32::from_gray(if is_octave { 215 } else { 150 }),
+        );
+        let bg = Rect::from_min_size(
+            pos - Vec2::new(2.0, galley.size().y),
+            galley.size() + Vec2::new(4.0, 2.0),
+        );
+        p.rect_filled(bg, 2.0, Color32::from_black_alpha(150));
+        p.galley(
+            pos - Vec2::new(0.0, galley.size().y),
+            galley,
+            Color32::WHITE,
         );
     }
 }
@@ -1299,4 +1338,68 @@ pub fn zoom_to_fit(doc: &mut Document) {
     let s1 = pts.iter().map(|p| p.st).fold(f64::NEG_INFINITY, f64::max);
     let a4 = doc.scene.settings.a4_hz;
     view::fit(&mut doc.time, &mut doc.pitch, (t0, t1), (s0, s1), a4);
+}
+
+#[cfg(test)]
+mod snap_tests {
+    use super::*;
+    use eframe::egui::{Pos2, Rect};
+    use synthesis_engine::{Division, Tempo};
+
+    fn view() -> View {
+        View {
+            rect: Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(1000.0, 500.0)),
+            time: crate::document::TimeView {
+                start_s: 0.0,
+                width_s: 4.0,
+            },
+            pitch: crate::document::PitchView {
+                lo_hz: 110.0,
+                hi_hz: 1760.0,
+                scale: PitchScale::Semitones,
+            },
+            a4: 440.0,
+        }
+    }
+
+    /// The grid snap rounds to the typed X step at the given tempo.
+    #[test]
+    fn x_snap_uses_the_typed_division() {
+        let v = view();
+        let state = CanvasState {
+            x_div: Division::new(8).unwrap(),
+            bpm: 120.0,
+            snap: true,
+            ..CanvasState::default()
+        };
+        // `1/8` is an eighth of a beat: 0.5 s / 8 = 0.0625 s at 120 BPM.
+        let step = state.x_div.x_step_s(Tempo::new(120.0).unwrap());
+        assert!((step - 0.0625).abs() < 1e-12, "step {step}");
+        // 0.6 s is at x = 150 px (1000 px / 4 s = 250 px/s); nearest eighth-beat is 0.625 s.
+        let (p, on_point) = snap(Pos2::new(150.0, 250.0), &v, &state, &[], None, false);
+        assert!(!on_point);
+        assert!((p.t - 0.625).abs() < 1e-9, "snapped to {}", p.t);
+    }
+
+    /// The pitch snap rounds to the typed Y step when the step is wide enough to see.
+    #[test]
+    fn y_snap_uses_the_typed_division() {
+        let v = view();
+        // At this zoom a semitone is about 27 px, so 1/4 st is about 7 px: too
+        // fine to snap. Zoom in pitch (1/4 st is then wide enough).
+        let mut v4 = v;
+        v4.pitch.lo_hz = 440.0 * ((60.0 - 69.0 - 6.0) / 12.0_f64).exp2();
+        v4.pitch.hi_hz = 440.0 * ((60.0 - 69.0 + 6.0) / 12.0_f64).exp2();
+        let st_px = v4.st_per_px(250.0);
+        assert!(st_px < 0.05, "zoomed in: {st_px} st per px");
+        let y = Division::new(4).unwrap();
+        let st = snap_pitch(60.3, &v4, y, 250.0);
+        assert!((st - 60.25).abs() < 1e-9, "snapped to {st}");
+        // At a coarse zoom the step is under 4 px, so the pitch is left alone.
+        let coarse = snap_pitch(60.3, &v, Division::new(4).unwrap(), 250.0);
+        assert!(
+            (coarse - 60.3).abs() < 1e-12,
+            "fine steps are not snapped at coarse zoom"
+        );
+    }
 }

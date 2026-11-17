@@ -12,7 +12,7 @@ use synthesis_engine::{LoopRegion, Tempo};
 use crate::document::Document;
 
 /// Height of the ruler strip in points.
-pub const HEIGHT: f32 = 30.0;
+pub const HEIGHT: f32 = 34.0;
 /// Grab distance for loop edges, in points.
 const EDGE_PX: f32 = 6.0;
 const LOOP_COLOR: Color32 = Color32::from_rgb(110, 165, 255);
@@ -85,53 +85,66 @@ pub fn show(
         }
     }
 
-    // Ticks: bars (labelled), beats; fall back to coarser steps when crowded.
+    // Ticks and labels. Every beat gets a tick; a label (bar number, and
+    // seconds) goes on each bar when there is room, and on each beat when
+    // zoomed in far enough. Labels step to coarser bar multiples when crowded.
     if let Some(tempo) = Tempo::new(bpm) {
         let beat = tempo.beat_s();
         let bar = beat * Tempo::BEATS_PER_BAR;
-        let mut label_every = 1u32;
-        while bar * f64::from(label_every) / s_per_px < 48.0 && label_every < 4096 {
-            label_every *= 2;
+        let beat_px = beat / s_per_px;
+        let bar_px = bar / s_per_px;
+        // Smallest bar multiple whose labels are at least 90 px apart.
+        let mut bars_per_label = 1u32;
+        while bar_px * f64::from(bars_per_label) < 90.0 && bars_per_label < 4096 {
+            bars_per_label *= 2;
         }
-        let show_beats = beat / s_per_px >= 8.0;
+        // Beat labels need room for "1.25 s": about 70 px. Below that only bars are labelled.
+        let label_beats = beat_px >= 70.0 && bars_per_label == 1;
+        // A bar label needs room for "1   2.00 s" at 13 px type (about 80 px).
+        let bar_labels_ok = bar_px >= 80.0 || bars_per_label > 1;
         let first = (doc.time.start_s.max(0.0) / beat).floor() as i64;
         let last = ((doc.time.start_s + doc.time.width_s).min(dur) / beat).ceil() as i64;
         for i in first..=last {
             let t = i as f64 * beat;
+            if t < 0.0 || t > dur + 1e-9 {
+                continue;
+            }
             let x = x_of(t, rect, doc);
-            let is_bar = i % 4 == 0;
-            if is_bar {
-                let n = (i / 4) as u32;
-                let labelled = n.is_multiple_of(label_every);
-                let h = if labelled { 12.0 } else { 6.0 };
-                p.line_segment(
-                    [Pos2::new(x, rect.bottom() - h), Pos2::new(x, rect.bottom())],
-                    Stroke::new(1.0, Color32::from_gray(150)),
+            let is_bar = i.rem_euclid(4) == 0;
+            let bar_no = i.div_euclid(4) as u32;
+            let on_label = if is_bar {
+                bar_labels_ok && bar_no.is_multiple_of(bars_per_label)
+            } else {
+                label_beats
+            };
+            let (h, color) = if is_bar {
+                (16.0, Color32::from_gray(170))
+            } else {
+                (8.0, Color32::from_gray(100))
+            };
+            p.line_segment(
+                [Pos2::new(x, rect.bottom() - h), Pos2::new(x, rect.bottom())],
+                Stroke::new(1.0, color),
+            );
+            if on_label {
+                let text = if is_bar {
+                    format!("{}   {:.2} s", bar_no + 1, t)
+                } else {
+                    format!("{:.2} s", t)
+                };
+                let font = if is_bar {
+                    egui::FontId::proportional(13.0)
+                } else {
+                    egui::FontId::monospace(11.0)
+                };
+                let pos = Pos2::new(x + 4.0, rect.top() + 3.0);
+                let galley = p.layout_no_wrap(text, font, Color32::from_gray(225));
+                let bg = Rect::from_min_size(
+                    pos - Vec2::new(2.0, 1.0),
+                    galley.size() + Vec2::new(4.0, 2.0),
                 );
-                if labelled {
-                    p.text(
-                        Pos2::new(x + 3.0, rect.top() + 2.0),
-                        egui::Align2::LEFT_TOP,
-                        format!("{}", n + 1),
-                        egui::FontId::proportional(11.0),
-                        Color32::from_gray(200),
-                    );
-                    p.text(
-                        Pos2::new(x + 3.0, rect.top() + 15.0),
-                        egui::Align2::LEFT_TOP,
-                        format!("{t:.2}s"),
-                        egui::FontId::monospace(9.0),
-                        Color32::from_gray(120),
-                    );
-                }
-            } else if show_beats {
-                p.line_segment(
-                    [
-                        Pos2::new(x, rect.bottom() - 4.0),
-                        Pos2::new(x, rect.bottom()),
-                    ],
-                    Stroke::new(1.0, Color32::from_gray(95)),
-                );
+                p.rect_filled(bg, 2.0, Color32::from_black_alpha(140));
+                p.galley(pos, galley, Color32::WHITE);
             }
         }
     }

@@ -4,7 +4,7 @@
 //! runs headless under the UI test harness.
 
 use eframe::egui;
-use synthesis_engine::{BitDepth, LoopRegion, PitchScale, Scene, Subdivision, Tempo};
+use synthesis_engine::{BitDepth, Division, LoopRegion, PitchScale, Scene, Tempo};
 
 use crate::audio::AudioOut;
 use crate::canvas::{self, CanvasState, Tool};
@@ -276,20 +276,9 @@ impl SynthesisApp {
         });
         ui.separator();
         ui.checkbox(&mut self.canvas.snap, "Snap to grid");
-        egui::ComboBox::from_label("Grid")
-            .selected_text(sub_label(self.canvas.subdivision))
-            .show_ui(ui, |ui| {
-                for sub in [
-                    Subdivision::Bar,
-                    Subdivision::Beat,
-                    Subdivision::Eighth,
-                    Subdivision::Sixteenth,
-                    Subdivision::ThirtySecond,
-                    Subdivision::Seconds,
-                ] {
-                    ui.selectable_value(&mut self.canvas.subdivision, sub, sub_label(sub));
-                }
-            });
+        ui.label("Grid divisions");
+        typed_division(ui, "X (time, per beat)", &mut self.canvas.x_div);
+        typed_division(ui, "Y (pitch, per step)", &mut self.canvas.y_div);
         ui.checkbox(&mut self.canvas.show_grid, "Show grid");
         ui.separator();
         ui.label("Pitch axis");
@@ -466,15 +455,35 @@ impl eframe::App for SynthesisApp {
     }
 }
 
-fn sub_label(s: Subdivision) -> &'static str {
-    match s {
-        Subdivision::Bar => "Bar",
-        Subdivision::Beat => "Beat",
-        Subdivision::Eighth => "1/8",
-        Subdivision::Sixteenth => "1/16",
-        Subdivision::ThirtySecond => "1/32",
-        Subdivision::Seconds => "1 s",
-    }
+/// A `1/N` field: type N (or `1/N`) and press Enter or leave the field.
+/// While the field has focus the typed text is kept in egui's temporary
+/// storage. On commit, valid text sets the division and invalid text is
+/// dropped, so the field shows the last valid value again.
+fn typed_division(ui: &mut egui::Ui, label: &str, div: &mut Division) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).small());
+        ui.monospace("1/");
+        let id = ui.make_persistent_id(label);
+        let typed: Option<String> = ui.data(|d| d.get_temp(id));
+        let mut text = typed.unwrap_or_else(|| div.denom.to_string());
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .id(id)
+                .desired_width(56.0)
+                .hint_text("N"),
+        );
+        // Name the field for assistive technology, as the visible label does.
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, label));
+        let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if resp.lost_focus() || enter {
+            if let Some(d) = Division::parse(&text) {
+                *div = d;
+            }
+            ui.data_mut(|d| d.remove::<String>(id));
+        } else if resp.has_focus() {
+            ui.data_mut(|d| d.insert_temp(id, text));
+        }
+    });
 }
 
 fn export(scene: &Scene, path: &std::path::Path) -> Result<(), String> {
