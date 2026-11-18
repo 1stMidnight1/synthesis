@@ -32,7 +32,7 @@ pub fn golden_scene() -> Scene {
             b: Point::new(3.0, st(330.0)),
         })
         .unwrap(),
-        Shape::filled(Geometry::Rectangle {
+        Shape::outline(Geometry::Rectangle {
             a: Point::new(0.5, st(300.0)),
             b: Point::new(2.0, st(600.0)),
         })
@@ -42,7 +42,7 @@ pub fn golden_scene() -> Scene {
             b: Point::new(2.5, st(900.0)),
         })
         .unwrap(),
-        Shape::filled(Geometry::Polygon {
+        Shape::outline(Geometry::Polygon {
             points: vec![
                 Point::new(1.0, st(700.0)),
                 Point::new(3.5, st(700.0)),
@@ -72,7 +72,7 @@ pub fn golden_scene() -> Scene {
     };
     let mut b = Voice::new("b");
     b.shapes = vec![
-        Shape::filled(Geometry::Circle {
+        Shape::outline(Geometry::Circle {
             center: Point::new(2.0, st(250.0)),
             radius_s: 0.8,
             radius_st: 5.0,

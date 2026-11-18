@@ -132,9 +132,8 @@ pub struct VoiceSynth {
     settled: Vec<bool>,
     /// Each shape's flattened edges and fill flag, computed once instead of
     /// on every control frame.
-    shape_edges: Vec<(Vec<Segment>, bool)>,
+    shape_edges: Vec<Vec<Segment>>,
     // Scratch buffers, reused every control frame so gating does not allocate.
-    scratch_cross: Vec<f64>,
     scratch_bands: Vec<(f64, f64)>,
     scratch_active: Vec<(u32, u32)>,
     /// Re-evaluate lattice gates on the next sample even if it is not on a
@@ -191,9 +190,7 @@ impl VoiceSynth {
         let lat_osc: Vec<SineOsc> = (0..n)
             .map(|i| SineOsc::new(lattice_phase(settings.phase_policy, i, n)))
             .collect();
-        let shape_edges: Vec<(Vec<Segment>, bool)> =
-            voice.shapes.iter().map(|s| (s.edges(), s.filled)).collect();
-        let max_edges = shape_edges.iter().map(|(e, _)| e.len()).max().unwrap_or(0);
+        let shape_edges: Vec<Vec<Segment>> = voice.shapes.iter().map(|s| s.edges()).collect();
 
         Self {
             voice,
@@ -219,7 +216,6 @@ impl VoiceSynth {
             active: Vec::with_capacity(64),
             settled: Vec::with_capacity(64),
             shape_edges,
-            scratch_cross: Vec::with_capacity(max_edges),
             scratch_bands: Vec::with_capacity(64),
             scratch_active: Vec::with_capacity(64),
             force_update: true,
@@ -248,24 +244,15 @@ impl VoiceSynth {
     fn update_lattice_targets(&mut self, t: f64) {
         let bands = &mut self.scratch_bands;
         bands.clear();
-        for (edges, filled) in &self.shape_edges {
-            let cross = &mut self.scratch_cross;
-            cross.clear();
+        // Only vertical edges sound now, as short bursts (R2). Curved outlines
+        // and straight edges sound through tones, not bands.
+        for edges in &self.shape_edges {
             for seg in edges {
                 if is_vertical(seg) {
                     let t0 = seg.a.t;
                     if t0 <= t && t < t0 + self.burst_s {
                         bands.push(vertical_span(seg));
                     }
-                } else if *filled && spans(seg, t) {
-                    cross.push(st_at(seg, t));
-                }
-            }
-            if *filled {
-                cross
-                    .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                for pair in cross.as_chunks::<2>().0 {
-                    bands.push((pair[0], pair[1]));
                 }
             }
         }

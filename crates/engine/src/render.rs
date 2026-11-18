@@ -209,7 +209,7 @@ mod tests {
         let st = |hz: f64| hz_to_st(hz, 440.0);
         let mut voice = Voice::new("v")
             .with_shape(
-                Shape::filled(Geometry::Rectangle {
+                Shape::outline(Geometry::Rectangle {
                     a: Point::new(0.0, st(200.0)),
                     b: Point::new(0.6, st(400.0)),
                 })

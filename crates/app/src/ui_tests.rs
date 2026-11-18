@@ -215,7 +215,7 @@ fn rectangle_both_ways() {
     u.drag(c, d);
     let s = u.shapes();
     assert_eq!(s.len(), 2);
-    assert!(s.iter().all(|x| !x.filled), "drawn shapes are outlines");
+    assert_eq!(s.len(), 2);
     assert_eq!(
         s[1].geometry,
         Geometry::Rectangle {
@@ -420,10 +420,6 @@ fn select_picks_by_pixel_distance() {
     let inside = u.screen(1.5, 62.0);
     u.click(inside);
     assert!(u.selected().is_empty(), "outline interior is empty space");
-    // Filled shapes select from anywhere inside.
-    u.app().doc.scene.voices[0].shapes[0].filled = true;
-    u.click(inside);
-    assert_eq!(u.selected(), BTreeSet::from([0]));
     let away = u.screen(3.0, 70.0);
     u.click(away);
     assert!(u.selected().is_empty());
@@ -591,33 +587,7 @@ fn moving_a_multi_selection_moves_all() {
     );
 }
 
-// --- Filled shapes (display only: they sound as bands, see R1) ---------------
-
-/// The fill display covers the interior of a non-rectangular shape and not
-/// the corners of its bounding box: sample the rendered pixels.
-#[test]
-fn fill_display_follows_the_shape() {
-    let mut u = Ui::new();
-    let tri = Geometry::Polygon {
-        points: vec![
-            Point::new(1.0, 58.0),
-            Point::new(3.0, 58.0),
-            Point::new(2.0, 74.0),
-        ],
-    };
-    assert!(u.app().doc.add_shape(Shape::filled(tri).unwrap()));
-    u.app().canvas.show_grid = false;
-    u.move_to(Pos2::new(5.0, 5.0));
-    let inside = u.screen(2.0, 62.0);
-    let corner = u.screen(1.15, 72.0);
-    let empty = u.screen(3.6, 66.0);
-    let img = u.h.render().expect("render");
-    let ppp = img.width() as f32 / SIZE.x;
-    let px = |p: Pos2| *img.get_pixel((p.x * ppp) as u32, (p.y * ppp) as u32);
-    let (pin, pcorner, pempty) = (px(inside), px(corner), px(empty));
-    assert_ne!(pin, pempty, "interior is tinted");
-    assert_eq!(pcorner, pempty, "bounding-box corner is not tinted");
-}
+// --- Shapes are outlines ----------------------------------------------------
 
 // --- Delete tool, navigation, keys ------------------------------------------
 
@@ -770,13 +740,13 @@ fn screenshots() {
         let img = u.h.render().expect("render");
         img.save(dir.join(format!("{name}.png"))).unwrap();
     };
-    // Shapes of every kind, some filled.
+    // Shapes of every kind, all outlines.
     let k = {
         let v = u.view();
         v.k_at(v.y_of(66.0))
     };
-    let add = |u: &mut Ui, g: Geometry, filled: bool| {
-        assert!(u.app().doc.add_shape(Shape::new(g, filled).unwrap()));
+    let add = |u: &mut Ui, g: Geometry| {
+        assert!(u.app().doc.add_shape(Shape::outline(g).unwrap()));
     };
     add(
         &mut u,
@@ -784,7 +754,6 @@ fn screenshots() {
             a: Point::new(0.25, 57.0),
             b: Point::new(1.0, 62.0),
         },
-        false,
     );
     add(
         &mut u,
@@ -792,17 +761,14 @@ fn screenshots() {
             a: Point::new(1.25, 57.0),
             b: Point::new(2.0, 61.0),
         },
-        true,
     );
     add(
         &mut u,
         sketch::circle(Point::new(0.6, 72.0), Point::new(0.6, 76.0), k).unwrap(),
-        true,
     );
     add(
         &mut u,
         sketch::ellipse(Point::new(1.6, 72.0), Point::new(1.95, 75.0)).unwrap(),
-        false,
     );
     add(
         &mut u,
@@ -813,12 +779,10 @@ fn screenshots() {
             k,
         )
         .unwrap(),
-        false,
     );
     add(
         &mut u,
         sketch::regular_polygon(Point::new(2.7, 72.0), Point::new(2.7, 76.0), 5, k).unwrap(),
-        true,
     );
     add(
         &mut u,
@@ -834,7 +798,6 @@ fn screenshots() {
                 Point::new(3.2, 66.0),
             ],
         },
-        true,
     );
     u.h.run_steps(2);
     save(&mut u, "01_shapes");

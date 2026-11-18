@@ -134,31 +134,6 @@ fn rectangle_outline_has_two_steady_peaks() {
     assert!(strong.is_empty(), "unexpected strong peaks: {strong:?}");
 }
 
-/// Test 3: a filled rectangle has energy across its band, between the edges.
-#[test]
-fn filled_rectangle_has_energy_across_band() {
-    let shape = Shape::filled(Geometry::Rectangle {
-        a: Point::new(0.0, st(200.0)),
-        b: Point::new(1.0, st(400.0)),
-    })
-    .unwrap();
-    let out = render_scene(&scene_with(1.0, shape)).unwrap();
-    let n = 1 << 17;
-    let mut x = out.left.clone();
-    x.resize(n, 0.0);
-    let mag = spectrum(&x);
-    let inside = energy_in(&mag, n, 220.0, 380.0);
-    let outside = energy_in(&mag, n, 0.0, 180.0) + energy_in(&mag, n, 420.0, 2000.0);
-    assert!(inside > 0.0);
-    assert!(
-        inside > 20.0 * outside,
-        "band energy {inside} not dominant over outside {outside}"
-    );
-    // Energy spreads across the band, not only at its edges.
-    let mid = energy_in(&mag, n, 280.0, 320.0);
-    assert!(mid > 0.01 * inside, "no energy mid-band: {mid} of {inside}");
-}
-
 /// Test 4: a vertical line at t = 0.5 s is a short burst containing its whole span.
 #[test]
 fn vertical_line_is_burst_containing_whole_span() {
@@ -228,7 +203,7 @@ fn gap_renders_silence() {
 /// Rendering is repeatable: the same scene gives byte-identical output.
 #[test]
 fn rendering_is_deterministic() {
-    let shape = Shape::filled(Geometry::Rectangle {
+    let shape = Shape::outline(Geometry::Rectangle {
         a: Point::new(0.0, st(200.0)),
         b: Point::new(0.5, st(400.0)),
     })
@@ -237,31 +212,6 @@ fn rendering_is_deterministic() {
     let a = render_scene(&scene).unwrap();
     let b = render_scene(&scene).unwrap();
     assert_eq!(a, b);
-}
-
-/// ENGINE-07: a filled band's RMS level does not depend on lattice density.
-#[test]
-fn band_loudness_is_independent_of_density() {
-    let shape = Shape::filled(Geometry::Rectangle {
-        a: Point::new(0.0, st(200.0)),
-        b: Point::new(1.0, st(400.0)),
-    })
-    .unwrap();
-    let rms = |density: f64| {
-        let mut scene = scene_with(1.0, shape.clone());
-        scene.settings.density_cents = density;
-        let out = render_scene(&scene).unwrap();
-        // Skip the first and last 50 ms to avoid edge effects.
-        let s = &out.left[2_400..out.left.len() - 2_400];
-        (s.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / s.len() as f64).sqrt()
-    };
-    let fine = rms(5.0);
-    let coarse = rms(20.0);
-    let db = 20.0 * (fine / coarse).log10();
-    assert!(
-        db.abs() < 1.0,
-        "loudness differs by {db:.2} dB across density"
-    );
 }
 
 // ---------------------------------------------------------------------------

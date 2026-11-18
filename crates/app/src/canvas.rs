@@ -23,11 +23,10 @@
 use std::collections::BTreeSet;
 
 use eframe::egui::{
-    self, Color32, CursorIcon, Mesh, Pos2, Rect, Response, Sense, Shape as EShape, Stroke,
-    StrokeKind, Ui, Vec2,
+    self, Color32, CursorIcon, Pos2, Rect, Response, Sense, Shape as EShape, Stroke, StrokeKind,
+    Ui, Vec2,
 };
 use synthesis_engine::pitchscale::{PitchScale, note_name};
-use synthesis_engine::sampling::fill_bands_edges;
 use synthesis_engine::sketch::{self, Handle, HandleKind};
 use synthesis_engine::{Division, Geometry, Point, Shape, Tempo};
 
@@ -260,33 +259,16 @@ pub fn outline_distance(shape: &Shape, v: &View, p: Pos2) -> f32 {
         .fold(f32::INFINITY, f32::min)
 }
 
-/// Whether the timeline point `p` is inside a closed shape (even-odd rule, the
-/// same rule that decides which frequencies a filled shape sounds).
-pub fn contains(shape: &Shape, p: Point) -> bool {
-    if !shape.is_closed() {
-        return false;
-    }
-    fill_bands_edges(&shape.edges(), p.t)
-        .iter()
-        .any(|&(lo, hi)| lo <= p.st && p.st <= hi)
-}
-
-/// The shape under screen point `p`: the nearest outline within `PICK_PX`,
-/// otherwise the topmost filled shape containing it.
+/// The shape under screen point `p`: the nearest outline within `PICK_PX`.
+/// Shapes are outlines only, so the interior is empty space.
 pub fn pick(shapes: &[Shape], v: &View, p: Pos2) -> Option<usize> {
-    let near = shapes
+    shapes
         .iter()
         .enumerate()
         .map(|(i, s)| (i, outline_distance(s, v, p)))
         .filter(|(_, d)| *d <= PICK_PX)
-        .min_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)));
-    if let Some((i, _)) = near {
-        return Some(i);
-    }
-    let tp = v.screen_to_point(p);
-    (0..shapes.len())
-        .rev()
-        .find(|&i| shapes[i].filled && contains(&shapes[i], tp))
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
+        .map(|(i, _)| i)
 }
 
 /// The handle under `p` among the given shapes, nearest first.
@@ -1075,10 +1057,6 @@ fn paint_shape(
     selected: bool,
     hovered: bool,
 ) {
-    let edges = shape.edges();
-    if shape.filled {
-        paint_fill(p, v, &edges, color);
-    }
     let stroke_color = if selected { SELECT_COLOR } else { color };
     let width = if hovered || selected { 3.0 } else { 2.0 };
     let pts: Vec<Pos2> = {
@@ -1096,41 +1074,6 @@ fn paint_shape(
         ));
     }
     p.add(EShape::line(pts, Stroke::new(width, stroke_color)));
-}
-
-/// Fill display: the even-odd bands the engine sounds, sampled every two
-/// screen points across the shape, as vertical strips joined into a mesh.
-fn paint_fill(p: &egui::Painter, v: &View, edges: &[synthesis_engine::Segment], color: Color32) {
-    let (mut t0, mut t1) = (f64::INFINITY, f64::NEG_INFINITY);
-    for e in edges {
-        t0 = t0.min(e.a.t.min(e.b.t));
-        t1 = t1.max(e.a.t.max(e.b.t));
-    }
-    if t0.partial_cmp(&t1) != Some(std::cmp::Ordering::Less) {
-        return;
-    }
-    let x0 = v.x_of(t0).max(v.rect.left());
-    let x1 = v.x_of(t1).min(v.rect.right());
-    if x1 <= x0 {
-        return;
-    }
-    let tint = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 70);
-    let mut mesh = Mesh::default();
-    let step = 2.0f32;
-    let mut x = x0;
-    while x < x1 {
-        let xn = (x + step).min(x1);
-        let t = v.t_of((x + xn) / 2.0);
-        for (lo, hi) in fill_bands_edges(edges, t) {
-            let (ya, yb) = (v.y_of(hi), v.y_of(lo));
-            mesh.add_colored_rect(
-                Rect::from_min_max(Pos2::new(x, ya.min(yb)), Pos2::new(xn, ya.max(yb))),
-                tint,
-            );
-        }
-        x = xn;
-    }
-    p.add(EShape::mesh(mesh));
 }
 
 fn paint_grid(p: &egui::Painter, gp: &egui::Painter, gutter: Rect, v: &View, state: &CanvasState) {

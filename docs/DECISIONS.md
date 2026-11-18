@@ -311,6 +311,26 @@ Confirmed by the user: remove the fill feature, and remove the curve playback se
 
 **Checks.** fmt, workspace tests, clippy with warnings denied, Windows type-checks for engine and app, release build: all pass.
 
+## Filled shapes removed (2026-11-18, confirmed by user)
+
+Confirmed by the user: filled shapes are removed from the engine too, as a milestone change to M1 (the accepted "filled rectangle renders a band" criterion is removed with them).
+
+**Removed.**
+- Engine: the `filled` flag on `Shape`, `Shape::filled`, `Shape::new(geometry, filled)` (replaced by `Shape::outline`), the even-odd band pairing (`fill_bands`, `fill_bands_edges`), and the band branch in `slice_at`. A closed shape sounds only its perimeter, as tones.
+- Acceptance tests: `filled_rectangle_has_energy_across_band` (PLAN §9 M1 test 3) and `band_loudness_is_independent_of_density` (ENGINE-07 test, which only concerned bands). Unit tests `r1_filled_rectangle_sounds_band` and `r1_fill_follows_non_rectangular_shapes`.
+- App: the filled-shape tint, picking a shape by clicking its interior (picking is now outline-only), and `fill_display_follows_the_shape`.
+- Docs: SPEC R1 "Filled" bullet and CANVAS-03/04; PLAN §3 R1, §4 CANVAS-03/04, §9 M1 test 3 and M3 fill toggle. Struck through, not deleted, so the history stays readable.
+
+**Kept.**
+- **Vertical bursts (R2).** These are not fills. A vertical edge still sounds its whole pitch span as a short burst, through the same lattice path. The vertical-burst and gap tests still pass, as do the 450 Hz line, the two-peak rectangle outline, and the rest of M1.
+- **Closed-curve outlines** and the 15 ms curve fade are unchanged.
+
+**Consequence.** The lattice's only job is now vertical bursts. The band-gating code path simplified accordingly (no crossings buffer, no pairing), and `slice_at` no longer returns bands from shapes.
+
+**Test results (2026-11-18, macOS arm64).** Before: 147 passing. After: 142 passing (the 5 removed are the filled-only tests above; no test was weakened). `cargo fmt --all -- --check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`: pass. Windows type-checks for engine and app: pass. Release build: pass.
+
+**Not verified.** Audible difference: outline-only shapes sound different from the old filled ones by design. Whether the simpler rendering sounds right is for the user to hear.
+
 ## Proposed
 
 _None yet._

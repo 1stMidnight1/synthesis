@@ -361,7 +361,7 @@ pub fn drag_handle(shape: &Shape, kind: HandleKind, to: Point, k: f64) -> Result
         }
         _ => return Err(bad("handle does not belong to this shape")),
     };
-    Shape::new(geometry, shape.filled)
+    Shape::outline(geometry)
 }
 
 #[cfg(test)]
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn polygon_vertex_moves_and_fill_is_kept() {
-        let s = Shape::filled(Geometry::Polygon {
+        let s = Shape::outline(Geometry::Polygon {
             points: vec![
                 Point::new(0.0, 60.0),
                 Point::new(1.0, 60.0),
@@ -497,7 +497,7 @@ mod tests {
         })
         .unwrap();
         let d = drag(&s, HandleKind::Vertex(2), Point::new(0.5, 70.0));
-        assert!(d.filled);
+
         let Geometry::Polygon { points } = &d.geometry else {
             panic!()
         };
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn rectangle_edge_moves_only_that_edge() {
-        let s = Shape::filled(rectangle(Point::new(1.0, 60.0), Point::new(3.0, 64.0)).unwrap())
+        let s = Shape::outline(rectangle(Point::new(1.0, 60.0), Point::new(3.0, 64.0)).unwrap())
             .unwrap();
         // Edge 1 is the side at b.t = 3: dragging it changes the end time only.
         let d = drag(&s, HandleKind::Edge(1), Point::new(5.0, 99.0));
@@ -543,7 +543,7 @@ mod tests {
                 b: Point::new(5.0, 64.0)
             }
         );
-        assert!(d.filled);
+
         // Edge 0 is at a.st = 60: dragging it changes that pitch only.
         let d = drag(&s, HandleKind::Edge(0), Point::new(-7.0, 57.0));
         assert_eq!(
