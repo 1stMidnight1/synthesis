@@ -46,8 +46,19 @@ pub fn show(
     drag: &mut Option<RulerDrag>,
 ) -> Option<f64> {
     let width = ui.available_width();
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(width, HEIGHT), Sense::click_and_drag());
+    // Same left gutter as the canvas, so ruler time lines up with the grid.
+    let (full, _) = ui.allocate_exact_size(Vec2::new(width, HEIGHT), Sense::hover());
+    ui.painter_at(full)
+        .rect_filled(full, 0.0, Color32::from_gray(30));
+    let rect = Rect::from_min_max(
+        Pos2::new(full.left() + crate::canvas::GUTTER_PX, full.top()),
+        full.max,
+    );
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with("synthesis_ruler"),
+        Sense::click_and_drag(),
+    );
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 0.0, Color32::from_gray(30));
     let dur = doc.scene.duration_s;

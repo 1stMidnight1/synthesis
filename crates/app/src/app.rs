@@ -361,9 +361,12 @@ impl SynthesisApp {
         ui.checkbox(&mut self.canvas.show_grid, "Show grid");
         ui.separator();
         let current = self.doc.scene.voices[self.doc.selected_voice].curve_sound;
-        egui::ComboBox::from_label("Curve sound")
-            .selected_text(current.label())
-            .width(150.0)
+        // Label on its own line and the box sized to the panel: a side label
+        // made the row wider than the panel and the layout collapsed.
+        let label = ui.label("Curve sound");
+        egui::ComboBox::from_id_salt("curve_sound")
+            .selected_text(current.short_label())
+            .width(ui.available_width())
             .show_ui(ui, |ui| {
                 for mode in CurveSound::ALL {
                     if ui.selectable_label(current == mode, mode.label()).clicked()
@@ -373,7 +376,9 @@ impl SynthesisApp {
                         self.doc.edit(|s| s.voices[voice].curve_sound = mode);
                     }
                 }
-            });
+            })
+            .response
+            .labelled_by(label.id);
         if ui.button("Export curve variants...").clicked() {
             self.export_curve_variants();
         }
