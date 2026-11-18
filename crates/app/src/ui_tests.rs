@@ -1018,3 +1018,27 @@ fn invalid_division_text_is_ignored() {
     assert_eq!(before, Division::new(16).unwrap());
     assert_eq!(Division::parse("1/999"), None, "out of range keeps 1/16");
 }
+
+/// Master gain: the slider sets the scene's master gain as one undoable step,
+/// and undo restores the value from before the change.
+#[test]
+fn master_gain_is_one_undoable_step() {
+    let mut u = Ui::new();
+    assert!((u.app().doc.scene.settings.master_gain - 0.7).abs() < 1e-9);
+    u.app().set_master_gain(0.4);
+    assert!((u.app().doc.scene.settings.master_gain - 0.4).abs() < 1e-9);
+    assert!(u.app().doc.history.can_undo());
+    u.app().undo();
+    assert!(
+        (u.app().doc.scene.settings.master_gain - 0.7).abs() < 1e-9,
+        "undo restores 70%"
+    );
+}
+
+/// Setting the same value again is not recorded as an edit.
+#[test]
+fn master_gain_same_value_is_not_an_edit() {
+    let mut u = Ui::new();
+    u.app().set_master_gain(0.7);
+    assert!(!u.app().doc.history.can_undo());
+}

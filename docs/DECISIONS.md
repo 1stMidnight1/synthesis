@@ -233,6 +233,13 @@ Four variants are selectable per voice ("Curve sound" in the sketch panel), so t
 - New tests: branch geometry (single-valued, on the curve, analytic rate matches finite differences, arc split), `CurveSound` selection, variant branch selection (upper-only and lower-only are each at least 20x weaker on the silent pitch), variants export as distinct WAVs.
 - `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass. Release build: pass.
 
+## M3 polish: master gain and the arc pop (2026-11-17)
+
+- **Master gain (OUT-01), adjustable.** A 0 to 100% slider is in the transport bar, next to Export. It writes the scene's master gain as one undoable step (committed on release), and it is shared by live playback and export, since both render from the scene settings. Default stays 70%. A test confirms that a 30% master keeps the circle-plus-arc scene inside full scale while 70% clips it, and that the level scales exactly linearly.
+- **The arc pop is not yet found.** Measured, not guessed: (1) offline, an arc's onset is a smooth 2 ms ramp (first sample 0.0007, largest 5 ms step 0.034); (2) an arc's end fades to exactly zero with a final step of 0.003; (3) through the live player, a sound ringing at the timeline end is cut with a step of 0.0000. So no discontinuity was found at the start or end. A lower master makes any pop quieter but does not remove a real discontinuity. The pop is open: it may come from something the offline render does not capture, or from the audio device. Needs the listener to say when it happens (press, release, loop wrap, or each arc).
+
+**Test results (2026-11-17, macOS arm64).** `cargo test --workspace`: 48 app, 86 engine unit, 14 engine acceptance, 1 render. `cargo clippy --workspace --all-targets -- -D warnings`: pass. Windows type-checks for engine and app: pass. Release build: pass.
+
 ## Proposed
 
 _None yet._

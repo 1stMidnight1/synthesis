@@ -502,3 +502,40 @@ fn curve_variants_export_as_distinct_wavs() {
         }
     }
 }
+
+/// Master gain controls the output level linearly, and at a lower master the
+/// circle-plus-arc scene stays inside full scale (no clipping in the export).
+#[test]
+fn master_gain_scales_output_and_removes_clipping() {
+    let circle = Shape::outline(Geometry::Circle {
+        center: Point::new(0.5, 69.0),
+        radius_s: 0.5,
+        radius_st: 6.0,
+    })
+    .unwrap();
+    let arc = Shape::outline(Geometry::Arc {
+        center: Point::new(2.5, 69.0),
+        rx_s: 0.5,
+        ry_st: 6.0,
+        start_rad: 0.0,
+        sweep_rad: std::f64::consts::TAU * 0.75,
+    })
+    .unwrap();
+    let render_at = |gain: f64| {
+        let mut s = Scene::new(3.5, Settings::default());
+        s.settings.master_gain = gain;
+        let mut v = Voice::new("curves");
+        v.shapes = vec![circle.clone(), arc.clone()];
+        s.voices.push(v);
+        render_scene(&s).unwrap()
+    };
+    let loud = render_at(0.7);
+    let quiet = render_at(0.3);
+    // Linear: the quiet render is the loud one scaled by 0.3 / 0.7.
+    let ratio = quiet.left[30_000] as f64 / loud.left[30_000] as f64;
+    assert!((ratio - 0.3 / 0.7).abs() < 1e-5, "ratio {ratio}");
+    // At 70% the scene exceeds full scale; at 30% it does not.
+    let over = |r: &Rendered| r.left.iter().filter(|v| v.abs() > 1.0).count();
+    assert!(over(&loud) > 0, "70% master clips this scene");
+    assert_eq!(over(&quiet), 0, "30% master stays inside full scale");
+}

@@ -1,14 +1,24 @@
 //! Writes the four curve variants as WAVs for listening, to the folder named
 //! in SYNTHESIS_LISTEN. Run with: SYNTHESIS_LISTEN=<dir> cargo test -p synthesis-engine --test write_listening
-use synthesis_engine::{BitDepth, CurveSound, Geometry, Point, Scene, Settings, Shape, Voice, render_scene, write_wav_file};
+use synthesis_engine::{
+    BitDepth, CurveSound, Geometry, Point, Scene, Settings, Shape, Voice, render_scene,
+    write_wav_file,
+};
 
 #[test]
 fn write_listening_files() {
-    let Ok(dir) = std::env::var("SYNTHESIS_LISTEN") else { return };
+    let Ok(dir) = std::env::var("SYNTHESIS_LISTEN") else {
+        return;
+    };
     let dir = std::path::PathBuf::from(dir);
     std::fs::create_dir_all(&dir).unwrap();
     // A circle and an arc, each over 2 s, one after another.
-    let circle = Shape::outline(Geometry::Circle { center: Point::new(0.5, 69.0), radius_s: 0.5, radius_st: 6.0 }).unwrap();
+    let circle = Shape::outline(Geometry::Circle {
+        center: Point::new(0.5, 69.0),
+        radius_s: 0.5,
+        radius_st: 6.0,
+    })
+    .unwrap();
     let arc = Shape::outline(Geometry::Arc {
         center: Point::new(2.5, 69.0),
         rx_s: 0.5,
