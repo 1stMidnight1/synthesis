@@ -268,6 +268,69 @@ Four variants are selectable per voice ("Curve sound" in the sketch panel), so t
 
 **Curve sound control.** The panel control was a combo box with its label to the side, which made the row wider than the panel and rendered as a tall box. The label is now on its own line, the box fills the panel width, and it shows a short name ("Long fades"). It stays named for accessibility through `labelled_by`.
 
+## M2.5 engine performance (2026-11-18)
+
+Profiled before changing anything. A 5-octave fill spent nearly all its time in `VoiceSynth::process`, mostly in `sin` (libm), and the lattice inner loop was the cost. Changes, in order of effect:
+
+1. **Active lattice ranges.** Only oscillators that can be audible are visited. Stored as ascending contiguous ranges, not an index list (the index list cost about 3x in the inner loop).
+2. **Settled ranges.** A range whose gains and targets are all 1 skips the ramp test each sample, and its flag is kept up to date once per control frame.
+3. **Fast sine.** `osc::fast_sin`, a degree-15 odd polynomial with symmetry reduction, error below 1e-11 (about -220 dBFS), roughly 3x faster than libm.
+4. **Cached edges, scratch buffers.** Shape edges are flattened once per voice; control-frame gating reuses buffers and no longer allocates per frame.
+5. **Voices in parallel.** Each voice renders on its own thread for blocks of at least 8192 frames; voice buffers are summed in voice order, so the result does not depend on threading (checked: identical on repeated runs).
+
+**Output contract changed, on purpose.** The fast sine and the reordered per-voice sum change the last bit of some float samples. The golden test (`perf_golden.rs`) now checks the largest difference against the reference is at most one 24-bit quantisation step (2^-23, about -138.5 dBFS). Measured difference: 1.19e-7, one LSB. The export quantises to 24 bits, so this does not change the exported file. Earlier wording that said output was bit-identical is superseded by this.
+
+**Speed (Apple M3, release, 10 s of audio, best of 3):**
+
+| Scene | Before | After |
+|---|---|---|
+| One line | 8.1x | 538x |
+| Filled 1 octave | 4.6x | 32.6x |
+| Filled 5 octaves | 1.5x | 7.0x |
+| Filled circle, 3 octaves | 2.7x | 10.7x |
+| 4 voices, 5-octave fill | 0.4x | 5.7x |
+| 8 voices, one line | 1.0x | 229x |
+
+**Accept criteria (from the plan):** a single line at 50x or better (met); a 5-octave fill at 4x or better (met, 7.0x).
+
+**Not yet done.** Live playback has a per-block cost too, which the offline benchmark does not measure; the parallel path only engages for blocks of 8192 frames or more, so live blocks (1024) run on one thread. Whether that is fast enough for 4+ voices of wide fills on a live stream is untested and should be checked in the app.
+
+## Cleanup: fill tool and curve selector removed (2026-11-18)
+
+Confirmed by the user: remove the fill feature, and remove the curve playback selector while keeping the long fade on.
+
+**Removed (app).** The Fill tool and its F shortcut, "New shapes filled", "Toggle fill", fill-by-click, and fill-on-selection. New shapes are always outlines, and the rubber-band preview is drawn as an outline.
+
+**Removed (curve selector).** The `CurveSound` enum (Literal, LongFade, UpperOnly, LowerOnly), the `Voice::curve_sound` field, the Curve sound combo box, and the "Export curve variants" button. The upper-only and lower-only modes and the 2 ms fade are gone with them.
+
+**Kept.** The curve fade is a fixed constant, `CURVE_FADE_MS = 15`, applied to every curve branch. Both branches of a closed curve always sound together. The post-end envelope is unchanged (0.94, 0.92, 0.86 ... declining over about 15 ms).
+
+**Kept on purpose: filled shapes in the engine.** A filled shape still sounds as a band of frequencies. This is the M1 acceptance requirement in PLAN.md section 9 ("a filled rectangle renders a band with energy between the two edges") and is covered by its tests, so removing it would break an accepted milestone. Only the editing feature is removed. The canvas still tints a filled shape so the display matches what sounds. If you want filled shapes removed from the engine as well, that changes an accepted requirement and needs a separate decision.
+
+**Test changes.** Removed the variant-selection, variant-export, default-variant and listening-writer tests, which existed only for the removed modes. Replaced the fill-tool and F-key tests with the rectangle test that checks drawn shapes are outlines. Kept the filled-shape display test. Engine: 87 unit, 12 acceptance, 1 golden. App: 47.
+
+**Checks.** fmt, workspace tests, clippy with warnings denied, Windows type-checks for engine and app, release build: all pass.
+
+## Filled shapes removed (2026-11-18, confirmed by user)
+
+Confirmed by the user: filled shapes are removed from the engine too, as a milestone change to M1 (the accepted "filled rectangle renders a band" criterion is removed with them).
+
+**Removed.**
+- Engine: the `filled` flag on `Shape`, `Shape::filled`, `Shape::new(geometry, filled)` (replaced by `Shape::outline`), the even-odd band pairing (`fill_bands`, `fill_bands_edges`), and the band branch in `slice_at`. A closed shape sounds only its perimeter, as tones.
+- Acceptance tests: `filled_rectangle_has_energy_across_band` (PLAN §9 M1 test 3) and `band_loudness_is_independent_of_density` (ENGINE-07 test, which only concerned bands). Unit tests `r1_filled_rectangle_sounds_band` and `r1_fill_follows_non_rectangular_shapes`.
+- App: the filled-shape tint, picking a shape by clicking its interior (picking is now outline-only), and `fill_display_follows_the_shape`.
+- Docs: SPEC R1 "Filled" bullet and CANVAS-03/04; PLAN §3 R1, §4 CANVAS-03/04, §9 M1 test 3 and M3 fill toggle. Struck through, not deleted, so the history stays readable.
+
+**Kept.**
+- **Vertical bursts (R2).** These are not fills. A vertical edge still sounds its whole pitch span as a short burst, through the same lattice path. The vertical-burst and gap tests still pass, as do the 450 Hz line, the two-peak rectangle outline, and the rest of M1.
+- **Closed-curve outlines** and the 15 ms curve fade are unchanged.
+
+**Consequence.** The lattice's only job is now vertical bursts. The band-gating code path simplified accordingly (no crossings buffer, no pairing), and `slice_at` no longer returns bands from shapes.
+
+**Test results (2026-11-18, macOS arm64).** Before: 147 passing. After: 142 passing (the 5 removed are the filled-only tests above; no test was weakened). `cargo fmt --all -- --check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`: pass. Windows type-checks for engine and app: pass. Release build: pass.
+
+**Not verified.** Audible difference: outline-only shapes sound different from the old filled ones by design. Whether the simpler rendering sounds right is for the user to hear.
+
 ## Proposed
 
 _None yet._

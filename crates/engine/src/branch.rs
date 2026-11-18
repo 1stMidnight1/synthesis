@@ -30,70 +30,13 @@ pub struct Branch {
     pub t1: f64,
 }
 
-/// Length of the long fades used by [`CurveSound::LongFade`], in milliseconds.
-pub const LONG_FADE_MS: f64 = 15.0;
-
-/// How a curved outline sounds. Chosen per voice so variants can be compared
-/// by ear. The default is both branches together with 15 ms fades at the
-/// turn points: a 2 ms fade is an audible pop at the start and end of an arc
-/// on headphones (confirmed by ear), while 15 ms removes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum CurveSound {
-    /// Both branches sound together, 2 ms fades. Pops at the turn points.
-    Literal,
-    /// Both branches sound together, 15 ms fades at the turn points (default).
-    #[default]
-    LongFade,
-    /// Only the upper branch: one pitch at each time.
-    UpperOnly,
-    /// Only the lower branch: one pitch at each time.
-    LowerOnly,
-}
-
-impl CurveSound {
-    pub const ALL: [CurveSound; 4] = [
-        CurveSound::Literal,
-        CurveSound::LongFade,
-        CurveSound::UpperOnly,
-        CurveSound::LowerOnly,
-    ];
-
-    /// Short name for narrow controls.
-    pub fn short_label(self) -> &'static str {
-        match self {
-            CurveSound::Literal => "Short fades",
-            CurveSound::LongFade => "Long fades",
-            CurveSound::UpperOnly => "Upper only",
-            CurveSound::LowerOnly => "Lower only",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            CurveSound::Literal => "Both, short fades (2 ms)",
-            CurveSound::LongFade => "Both, long fades (15 ms, default)",
-            CurveSound::UpperOnly => "Upper only",
-            CurveSound::LowerOnly => "Lower only",
-        }
-    }
-
-    /// Whether a branch on the upper (`true`) or lower half sounds.
-    pub fn selects(self, upper: bool) -> bool {
-        match self {
-            CurveSound::Literal | CurveSound::LongFade => true,
-            CurveSound::UpperOnly => upper,
-            CurveSound::LowerOnly => !upper,
-        }
-    }
-
-    /// Fade length for curve branches, if it differs from the default ramp.
-    pub fn fade_ms(self) -> Option<f64> {
-        match self {
-            CurveSound::LongFade => Some(LONG_FADE_MS),
-            _ => None,
-        }
-    }
-}
+/// Fade length at the two turn points of a curve, in milliseconds.
+///
+/// Fixed at 15 ms. A 2 ms fade is an audible pop at the start and end of an
+/// arc on headphones (confirmed by ear); 15 ms removes it. There is no
+/// selector for this: the curve always sounds both of its branches together
+/// with this fade.
+pub const CURVE_FADE_MS: f64 = 15.0;
 
 impl Branch {
     /// True if this branch is on the upper half of its curve (pitch above the centre).
@@ -311,19 +254,8 @@ mod tests {
     }
 
     #[test]
-    fn curve_sound_selects_by_half() {
-        use super::CurveSound::*;
-        assert!(Literal.selects(true) && Literal.selects(false));
-        assert!(LongFade.selects(true) && LongFade.selects(false));
-        assert!(UpperOnly.selects(true) && !UpperOnly.selects(false));
-        assert!(!LowerOnly.selects(true) && LowerOnly.selects(false));
-        assert_eq!(
-            CurveSound::default(),
-            LongFade,
-            "long fades are the default"
-        );
-        assert_eq!(LongFade.fade_ms(), Some(LONG_FADE_MS));
-        assert_eq!(Literal.fade_ms(), None);
+    fn curve_fade_is_fixed_at_15_ms() {
+        assert_eq!(CURVE_FADE_MS, 15.0);
     }
 
     #[test]

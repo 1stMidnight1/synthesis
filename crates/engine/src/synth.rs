@@ -36,7 +36,7 @@ use crate::micro::{DepthUnit, shift_hz};
 use crate::model::{PhasePolicy, Settings, Voice};
 use crate::osc::SineOsc;
 use crate::pitch::{AUDIBLE_MAX_HZ, AUDIBLE_MIN_HZ, hz_to_st, st_to_hz};
-use crate::sampling::{is_vertical, slice_at, spans, st_at};
+use crate::sampling::{is_vertical, spans, st_at, vertical_span};
 
 /// Base lattice amplitude before density compensation.
 ///
@@ -99,7 +99,7 @@ pub struct VoiceSynth {
     sr: f64,
     a4_hz: f64,
     ramp_step: f64,
-    /// Gate ramp for curve branches (differs only for `CurveSound::LongFade`).
+    /// Gate ramp for curve branches (`branch::CURVE_FADE_MS`).
     branch_ramp_step: f64,
     control_samples: usize,
     burst_s: f64,
@@ -115,9 +115,27 @@ pub struct VoiceSynth {
     // Lattice bands.
     lat_st: Vec<f64>,
     lat_hz: Vec<f64>,
+    /// Phase step per sample at the macro pitch: `TAU * lat_hz / sr`.
+    lat_step: Vec<f64>,
     lat_osc: Vec<SineOsc>,
     lat_gain: Vec<f64>,
     lat_target: Vec<f64>,
+    /// Lattice indices that may be audible (gain or target above zero), as
+    /// ascending, non-overlapping half-open ranges. Only these are processed
+    /// per sample; the rest are silent and would contribute nothing. Ranges
+    /// (not an index list) keep the inner loop contiguous, which is about 3x
+    /// faster; ascending order keeps the sum in the same order as a full scan,
+    /// so output is unchanged (M2.5).
+    active: Vec<(u32, u32)>,
+    /// For each `active` range, whether every gain and target in it is 1.0.
+    /// Kept up to date by `process`, so the check is not repeated per sample.
+    settled: Vec<bool>,
+    /// Each shape's flattened edges and fill flag, computed once instead of
+    /// on every control frame.
+    shape_edges: Vec<Vec<Segment>>,
+    // Scratch buffers, reused every control frame so gating does not allocate.
+    scratch_bands: Vec<(f64, f64)>,
+    scratch_active: Vec<(u32, u32)>,
     /// Re-evaluate lattice gates on the next sample even if it is not on a
     /// control-frame boundary (set after a seek).
     force_update: bool,
@@ -134,14 +152,9 @@ impl VoiceSynth {
         // one continuous oscillator per branch, with no vertices (branch.rs).
         let mut tone_segs = Vec::new();
         let mut curve_branches = Vec::new();
-        let curve_sound = voice.curve_sound;
         for shape in &voice.shapes {
             if let Some(branches) = branch::branches(&shape.geometry) {
-                curve_branches.extend(
-                    branches
-                        .into_iter()
-                        .filter(|b| curve_sound.selects(b.is_upper())),
-                );
+                curve_branches.extend(branches);
                 continue;
             }
             for seg in shape.edges() {
@@ -152,9 +165,7 @@ impl VoiceSynth {
         }
         let tone_count = tone_segs.len();
         let branch_count = curve_branches.len();
-        let branch_ramp_samples = curve_sound
-            .fade_ms()
-            .map_or(ramp_samples, |ms| (ms * 1e-3 * sr).max(1.0));
+        let branch_ramp_samples = (branch::CURVE_FADE_MS * 1e-3 * sr).max(1.0);
 
         // Lattice from AUDIBLE_MIN_HZ up, spaced by density in cents.
         let step = settings.density_cents / 100.0;
@@ -175,9 +186,11 @@ impl VoiceSynth {
             .iter()
             .map(|&st| st_to_hz(st, settings.a4_hz))
             .collect();
+        let lat_step: Vec<f64> = lat_hz.iter().map(|&f| TAU * f / sr).collect();
         let lat_osc: Vec<SineOsc> = (0..n)
             .map(|i| SineOsc::new(lattice_phase(settings.phase_policy, i, n)))
             .collect();
+        let shape_edges: Vec<Vec<Segment>> = voice.shapes.iter().map(|s| s.edges()).collect();
 
         Self {
             voice,
@@ -196,9 +209,15 @@ impl VoiceSynth {
             branch_gain: vec![0.0; branch_count],
             lat_st,
             lat_hz,
+            lat_step,
             lat_osc,
             lat_gain: vec![0.0; n],
             lat_target: vec![0.0; n],
+            active: Vec::with_capacity(64),
+            settled: Vec::with_capacity(64),
+            shape_edges,
+            scratch_bands: Vec::with_capacity(64),
+            scratch_active: Vec::with_capacity(64),
             force_update: true,
         }
     }
@@ -216,11 +235,80 @@ impl VoiceSynth {
     }
 
     /// Re-evaluate lattice gate targets from the sounding set at `t`.
+    ///
+    /// The bands are the same as `sampling::slice_at` computes (vertical-edge
+    /// bursts from every shape, even-odd fill bands from filled shapes), but
+    /// from cached edges and reused buffers. The lattice is sorted by pitch,
+    /// so each band maps to a contiguous index range found by binary search,
+    /// with the same `lo <= st <= hi` rule as before.
     fn update_lattice_targets(&mut self, t: f64) {
-        let slice = slice_at(&self.voice.shapes, t, self.burst_s);
-        for (i, &st) in self.lat_st.iter().enumerate() {
-            let on = slice.bands.iter().any(|&(lo, hi)| lo <= st && st <= hi);
-            self.lat_target[i] = if on { 1.0 } else { 0.0 };
+        let bands = &mut self.scratch_bands;
+        bands.clear();
+        // Only vertical edges sound now, as short bursts (R2). Curved outlines
+        // and straight edges sound through tones, not bands.
+        for edges in &self.shape_edges {
+            for seg in edges {
+                if is_vertical(seg) {
+                    let t0 = seg.a.t;
+                    if t0 <= t && t < t0 + self.burst_s {
+                        bands.push(vertical_span(seg));
+                    }
+                }
+            }
+        }
+
+        // Targets: only active oscillators can have a non-zero target, so
+        // clearing those clears them all.
+        for &(a, b) in &self.active {
+            self.lat_target[a as usize..b as usize].fill(0.0);
+        }
+        let next = &mut self.scratch_active;
+        next.clear();
+        // Still-ramping oscillators stay active: keep the parts of the old
+        // ranges whose gain is above zero.
+        for &(a, b) in &self.active {
+            let mut run: Option<u32> = None;
+            for i in a..b {
+                if self.lat_gain[i as usize] > 0.0 {
+                    run.get_or_insert(i);
+                } else if let Some(r) = run.take() {
+                    next.push((r, i));
+                }
+            }
+            if let Some(r) = run {
+                next.push((r, b));
+            }
+        }
+        for &(lo, hi) in bands.iter() {
+            let a = self.lat_st.partition_point(|&s| s < lo);
+            let b = self.lat_st.partition_point(|&s| s <= hi);
+            if a < b {
+                self.lat_target[a..b].fill(1.0);
+                next.push((a as u32, b as u32));
+            }
+        }
+        // Merge into ascending, non-overlapping ranges.
+        next.sort_unstable();
+        let mut w = 0;
+        for k in 0..next.len() {
+            if w > 0 && next[k].0 <= next[w - 1].1 {
+                next[w - 1].1 = next[w - 1].1.max(next[k].1);
+            } else {
+                next[w] = next[k];
+                w += 1;
+            }
+        }
+        next.truncate(w);
+        std::mem::swap(&mut self.active, &mut self.scratch_active);
+        // Recompute which ranges are fully settled at gain 1.
+        self.settled.clear();
+        for &(a, b) in &self.active {
+            let (a, b) = (a as usize, b as usize);
+            let s = self.lat_gain[a..b]
+                .iter()
+                .zip(&self.lat_target[a..b])
+                .all(|(&g, &t)| g == 1.0 && t == 1.0);
+            self.settled.push(s);
         }
     }
 
@@ -270,13 +358,82 @@ impl VoiceSynth {
         }
 
         // Lattice bands: gated on macro pitch, sounding at the shifted frequency.
-        for i in 0..self.lat_st.len() {
-            let g = ramp_toward(self.lat_gain[i], self.lat_target[i], self.ramp_step);
-            self.lat_gain[i] = g;
-            if g > 0.0 {
-                let f = shift_hz(self.lat_hz[i], offset, unit).max(0.0);
-                out += self.amp_band * g * self.lat_osc[i].next(f, self.sr);
+        // Only oscillators that can be audible are visited, in index order.
+        //
+        // Fast path: with no micro the frequency is the macro pitch, so the
+        // phase step is the precomputed `lat_step`; `max(0.0)` is a no-op on
+        // positive lattice frequencies. The step is computed with the same
+        // expression `SineOsc::next` uses, so output is unchanged.
+        if self.voice.micro.is_none() {
+            let mut band = 0.0;
+            let (amp, ramp) = (self.amp_band, self.ramp_step);
+            for (r, &(a, b)) in self.active.iter().enumerate() {
+                let (a, b) = (a as usize, b as usize);
+                let gains = &mut self.lat_gain[a..b];
+                let targets = &self.lat_target[a..b];
+                let oscs = &mut self.lat_osc[a..b];
+                let steps = &self.lat_step[a..b];
+                // Most samples, every oscillator in a band is settled at full
+                // gain. Then there is nothing to ramp and nothing to skip, and
+                // a branch-free loop runs about 3x faster than one that tests
+                // each gain (the test stops the sines from pipelining). It is
+                // the same arithmetic in the same order: `amp * 1.0 * x`.
+                if self.settled[r] {
+                    for j in 0..oscs.len() {
+                        band += amp * gains[j] * oscs[j].next_step(steps[j]);
+                    }
+                    continue;
+                }
+                let mut all_settled = true;
+                for j in 0..gains.len() {
+                    let tgt = targets[j];
+                    let mut g = gains[j];
+                    if g != tgt {
+                        g = ramp_toward(g, tgt, ramp);
+                        gains[j] = g;
+                    }
+                    if g > 0.0 {
+                        band += amp * g * oscs[j].next_step(steps[j]);
+                    }
+                    all_settled &= g == 1.0 && tgt == 1.0;
+                }
+                self.settled[r] = all_settled;
             }
+            return out + band;
+        }
+        // The micro shift is the same for every lattice oscillator, so its
+        // factor (semitones) or offset (Hz) is computed once per sample;
+        // `shift_hz` computes exactly `f * factor` or `f + offset`.
+        let (factor, add) = match unit {
+            DepthUnit::Semitones => ((offset / 12.0).exp2(), 0.0),
+            DepthUnit::Hz => (1.0, offset),
+        };
+        let semis = matches!(unit, DepthUnit::Semitones);
+        let (amp, ramp, sr) = (self.amp_band, self.ramp_step, self.sr);
+        for (r, &(a, b)) in self.active.iter().enumerate() {
+            let (a, b) = (a as usize, b as usize);
+            let gains = &mut self.lat_gain[a..b];
+            let targets = &self.lat_target[a..b];
+            let oscs = &mut self.lat_osc[a..b];
+            let hz = &self.lat_hz[a..b];
+            // Same frequency arithmetic as `shift_hz` and `SineOsc::next`.
+            let freq = |h: f64| (if semis { h * factor } else { h + add }).max(0.0);
+            if self.settled[r] {
+                for j in 0..oscs.len() {
+                    out += amp * gains[j] * oscs[j].next(freq(hz[j]), sr);
+                }
+                continue;
+            }
+            let mut all_settled = true;
+            for j in 0..gains.len() {
+                let g = ramp_toward(gains[j], targets[j], ramp);
+                gains[j] = g;
+                if g > 0.0 {
+                    out += amp * g * oscs[j].next(freq(hz[j]), sr);
+                }
+                all_settled &= g == 1.0 && targets[j] == 1.0;
+            }
+            self.settled[r] = all_settled;
         }
 
         out

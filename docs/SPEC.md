@@ -13,11 +13,11 @@ Each rule must have a test.
 
 **R1. Sounding set.** At each time *t*, the frequencies sounding in a voice are determined by where its macro shapes meet the vertical line at *t*:
 - **Outline:** each edge crossing is one frequency. A rectangle sounds two pitches between its left and right sides.
-- **Filled:** every frequency between crossings sounds, as a band.
+- **Filled shapes: removed (2026-11-18).** A closed shape sounds only its perimeter. Its interior is not a band.
 
 Multiple shapes in one voice contribute together. Where shapes overlap at the same frequency, their contributions **add** [D-3].
 
-**R2. Vertical edges.** A vertical line at time *t* produces a slice containing all frequencies in its span, all at once, like a very short filled region. The slice gets a time window, default 5 ms, configurable. It is not a sweep. "Sustain" means the window length can be extended to hold the slice for a set time [D-6].
+**R2. Vertical edges.** A vertical line at time *t* produces a slice containing all frequencies in its span, all at once, as a short burst. The slice gets a time window, default 5 ms, configurable. It is not a sweep. "Sustain" means the window length can be extended to hold the slice for a set time [D-6].
 
 **R3. Gaps are silence.** Where no shape crosses the vertical line, the voice is silent.
 
@@ -54,8 +54,8 @@ f_out(t)    = f_macro(t) + offset(t)                                           d
 ### 2.1 Canvas and drawing (CANVAS)
 - **CANVAS-01** Pitch-time canvas per voice with pan (middle-drag) and zoom (wheel).
 - **CANVAS-02** Tools: Select/Move, Line, Polyline, Rectangle, Circle, Ellipse, Arc, Polygon, Delete [D-17].
-- **CANVAS-03** Fill tool: click inside a closed shape to toggle outline/filled.
-- **CANVAS-04** Each shape shows its mode visually.
+- **CANVAS-03** ~~Fill tool: click inside a closed shape to toggle outline/filled.~~ Removed 2026-11-18 (filled shapes removed, see DECISIONS).
+- **CANVAS-04** ~~Each shape shows its mode visually.~~ Removed with CANVAS-03; all shapes are outlines.
 - **CANVAS-05** Undo and redo for every edit.
 - **CANVAS-06** Shapes stored as vector geometry; rasterizing is display-only.
 - **CANVAS-07** Shapes can be selected, moved, and resized with handles.

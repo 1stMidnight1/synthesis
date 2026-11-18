@@ -28,7 +28,7 @@ pub mod synth;
 pub mod transform;
 pub mod transport;
 
-pub use branch::CurveSound;
+pub use branch::CURVE_FADE_MS;
 pub use error::{EngineError, Result};
 pub use export::{BitDepth, write_wav, write_wav_file};
 pub use geometry::{Geometry, Point, Segment, Shape};

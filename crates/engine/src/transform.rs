@@ -57,7 +57,7 @@ fn map_points(g: &Geometry, f: &impl Fn(Point) -> Point) -> Geometry {
 pub fn translate(shape: &Shape, dt_s: f64, dst: f64) -> Result<Shape> {
     let f = |p: Point| Point::new((p.t + dt_s).max(0.0), p.st + dst);
     let geometry = map_points(&shape.geometry, &f);
-    Shape::new(geometry, shape.filled)
+    Shape::outline(geometry)
 }
 
 /// Scale a shape about `anchor` by `(sx, sy)` on time and pitch.
@@ -104,7 +104,7 @@ pub fn scale(shape: &Shape, anchor: Point, sx: f64, sy: f64) -> Result<Shape> {
         },
         other => other,
     };
-    Shape::new(geometry, shape.filled)
+    Shape::outline(geometry)
 }
 
 /// Distance in semitone-or-second space used for hit testing. Times are

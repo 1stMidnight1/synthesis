@@ -28,7 +28,7 @@ It is conceptually similar to UPIC (Xenakis, 1977) and MetaSynth, but it works w
 | Term | Meaning |
 |---|---|
 | **Voice** | One instrument. Owns one micro shape, any number of macro shapes, and one volume lane pair (L, R). Analogy: a synth patch plus a MIDI track plus an automation track. |
-| **Macro shape** | A vector shape on a voice's pitch-time canvas: line, polyline, rectangle, circle, ellipse, arc, or polygon. Each shape is either outline or filled. |
+| **Macro shape** | A vector shape on a voice's pitch-time canvas: line, polyline, rectangle, circle, ellipse, arc, or polygon. Shapes are outlines only (filled shapes removed 2026-11-18). |
 | **Micro shape** | One cycle of a user-drawn waveform. It is applied as a pitch transform to its voice. All macro shapes in a voice share it. |
 | **Volume lane** | A curve on a volume-versus-time canvas. Left (red) and right (blue) have their own lanes, and purple edits both at once. |
 | **Slice** | The set of frequencies sounding at one instant *t*. |
@@ -44,7 +44,7 @@ These rules are what the engine must implement. Each one should have a test.
 
 **R1. Sounding set.** At each time *t*, the frequencies sounding in a voice are determined by where its macro shapes meet the vertical line at *t*:
 - **Outline:** each edge crossing is one frequency. A rectangle sounds two pitches between its left and right sides.
-- **Filled:** every frequency between crossings sounds, as a band.
+- ~~**Filled:** every frequency between crossings sounds, as a band.~~ Removed 2026-11-18.
 
 Multiple shapes in one voice contribute together. **[OPEN]** If two shapes overlap at the same frequency, do their contributions add, or does the frequency count once?
 
@@ -89,8 +89,8 @@ IDs are for reference in commits and issues.
 ### 4.1 Canvas and drawing (CANVAS)
 - **CANVAS-01** Pitch-time canvas per voice with pan (middle-drag) and zoom (wheel).
 - **CANVAS-02** Tools: Select/Move, Line, Polyline, Rectangle, Circle, Ellipse, Arc, Polygon, Delete.
-- **CANVAS-03** Click inside any closed shape with the Fill tool to toggle outline or filled mode.
-- **CANVAS-04** Each shape shows its mode (outline or filled) visually.
+- ~~**CANVAS-03** Click inside any closed shape with the Fill tool to toggle outline or filled mode.~~ Removed 2026-11-18.
+- ~~**CANVAS-04** Each shape shows its mode (outline or filled) visually.~~ Removed 2026-11-18.
 - **CANVAS-05** Undo and redo for every edit.
 - **CANVAS-06** Shapes are stored as vector geometry, not pixels. Rasterizing is only for display.
 - **CANVAS-07** Shapes can be selected, moved, and resized. Handles appear on selection.
@@ -332,7 +332,7 @@ Work one milestone at a time. Each ends with tests passing, a commit or tag, and
 - *Accept (tests):*
   - A flat 450 Hz line for 1 s renders a peak at 450 Hz (FFT within 1 Hz).
   - A rectangle outline between 200 Hz and 400 Hz renders two steady peaks.
-  - A filled rectangle renders a band with energy between the two edges.
+  - ~~A filled rectangle renders a band with energy between the two edges.~~ Removed 2026-11-18 with filled shapes.
   - A vertical line at time *t* renders a short burst containing its whole range.
   - A gap renders silence.
 
@@ -343,11 +343,11 @@ Work one milestone at a time. Each ends with tests passing, a commit or tag, and
 - *Accept (tests):* a sine micro with 10 ms period and ±10 Hz depth on a 450 Hz line produces sidebands about 100 Hz from the carrier, with the expected small modulation index. Left and right gains differ as set.
 
 **M3. Standalone canvas and transport.**
-- Pitch canvas with pan and zoom, shape tools, outline and fill toggle.
+- Pitch canvas with pan and zoom, shape tools. (Outline and fill toggle removed 2026-11-18.)
 - Grid (BPM-based time grid, Y grid), note labels, scale modes (R8).
 - Transport with play, stop, playhead, loop, and time display.
 - Export WAV from the UI.
-- *Accept:* a user can draw each shape type, toggle outline and fill, play it, and export a WAV that matches the engine test results.
+- *Accept:* a user can draw each shape type, play it, and export a WAV that matches the engine test results.
 
 **M4. Volume canvas.**
 - Red, blue, and purple lanes, with overlap display (VOL-01 to VOL-04).

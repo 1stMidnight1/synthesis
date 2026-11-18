@@ -73,11 +73,11 @@ pub enum Geometry {
     Polygon { points: Vec<Point> },
 }
 
-/// A drawn shape. Filled mode (CANVAS-03) is only valid for closed shapes.
+/// A drawn shape: its geometry. Every shape is an outline; a closed shape
+/// sounds only its perimeter (R1). Filled shapes were removed (M-remove-filled).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shape {
     pub geometry: Geometry,
-    pub filled: bool,
 }
 
 fn finite(p: &Point) -> bool {
@@ -89,19 +89,9 @@ fn bad(msg: &str) -> EngineError {
 }
 
 impl Shape {
-    /// Create an outline shape.
-    pub fn outline(geometry: Geometry) -> Result<Self> {
-        Self::new(geometry, false)
-    }
-
-    /// Create a filled shape. Errors if the geometry is open.
-    pub fn filled(geometry: Geometry) -> Result<Self> {
-        Self::new(geometry, true)
-    }
-
     /// Create a shape and validate it.
-    pub fn new(geometry: Geometry, filled: bool) -> Result<Self> {
-        let shape = Self { geometry, filled };
+    pub fn outline(geometry: Geometry) -> Result<Self> {
+        let shape = Self { geometry };
         shape.validate()?;
         Ok(shape)
     }
@@ -117,11 +107,8 @@ impl Shape {
         )
     }
 
-    /// Check finiteness, counts, radii, and sweep, and reject filled open shapes.
+    /// Check finiteness, counts, radii, and sweep.
     pub fn validate(&self) -> Result<()> {
-        if self.filled && !self.is_closed() {
-            return Err(bad("only closed shapes can be filled"));
-        }
         match &self.geometry {
             Geometry::Line { a, b } | Geometry::Rectangle { a, b } => {
                 if !finite(a) || !finite(b) {
@@ -302,7 +289,7 @@ mod tests {
 
     #[test]
     fn rectangle_is_closed_with_four_edges() {
-        let s = Shape::filled(Geometry::Rectangle {
+        let s = Shape::outline(Geometry::Rectangle {
             a: p(0.0, 60.0),
             b: p(1.0, 64.0),
         })
@@ -327,7 +314,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(e.edges().len(), CURVE_SEGMENTS_PER_TURN);
-        let g = Shape::filled(Geometry::Polygon {
+        let g = Shape::outline(Geometry::Polygon {
             points: vec![p(0.0, 60.0), p(1.0, 60.0), p(0.5, 65.0)],
         })
         .unwrap();
@@ -335,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn arc_is_open_and_fill_is_rejected() {
+    fn arc_is_open_and_zero_sweep_is_rejected() {
         let arc = Shape::outline(Geometry::Arc {
             center: p(1.0, 69.0),
             rx_s: 0.5,
@@ -347,14 +334,23 @@ mod tests {
         assert!(!arc.is_closed());
         assert!(!arc.edges().is_empty());
 
-        let err = Shape::filled(Geometry::Arc {
+        // A short arc is a valid outline; a zero sweep is not.
+        let short = Shape::outline(Geometry::Arc {
             center: p(1.0, 69.0),
             rx_s: 0.5,
             ry_st: 3.0,
             start_rad: 0.0,
             sweep_rad: 1.0,
         });
-        assert!(err.is_err(), "open arc must not be fillable");
+        assert!(short.is_ok(), "a short arc is a valid outline");
+        let zero = Shape::outline(Geometry::Arc {
+            center: p(1.0, 69.0),
+            rx_s: 0.5,
+            ry_st: 3.0,
+            start_rad: 0.0,
+            sweep_rad: 0.0,
+        });
+        assert!(zero.is_err(), "a zero-sweep arc is rejected");
     }
 
     #[test]

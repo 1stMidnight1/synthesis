@@ -134,31 +134,6 @@ fn rectangle_outline_has_two_steady_peaks() {
     assert!(strong.is_empty(), "unexpected strong peaks: {strong:?}");
 }
 
-/// Test 3: a filled rectangle has energy across its band, between the edges.
-#[test]
-fn filled_rectangle_has_energy_across_band() {
-    let shape = Shape::filled(Geometry::Rectangle {
-        a: Point::new(0.0, st(200.0)),
-        b: Point::new(1.0, st(400.0)),
-    })
-    .unwrap();
-    let out = render_scene(&scene_with(1.0, shape)).unwrap();
-    let n = 1 << 17;
-    let mut x = out.left.clone();
-    x.resize(n, 0.0);
-    let mag = spectrum(&x);
-    let inside = energy_in(&mag, n, 220.0, 380.0);
-    let outside = energy_in(&mag, n, 0.0, 180.0) + energy_in(&mag, n, 420.0, 2000.0);
-    assert!(inside > 0.0);
-    assert!(
-        inside > 20.0 * outside,
-        "band energy {inside} not dominant over outside {outside}"
-    );
-    // Energy spreads across the band, not only at its edges.
-    let mid = energy_in(&mag, n, 280.0, 320.0);
-    assert!(mid > 0.01 * inside, "no energy mid-band: {mid} of {inside}");
-}
-
 /// Test 4: a vertical line at t = 0.5 s is a short burst containing its whole span.
 #[test]
 fn vertical_line_is_burst_containing_whole_span() {
@@ -228,7 +203,7 @@ fn gap_renders_silence() {
 /// Rendering is repeatable: the same scene gives byte-identical output.
 #[test]
 fn rendering_is_deterministic() {
-    let shape = Shape::filled(Geometry::Rectangle {
+    let shape = Shape::outline(Geometry::Rectangle {
         a: Point::new(0.0, st(200.0)),
         b: Point::new(0.5, st(400.0)),
     })
@@ -237,31 +212,6 @@ fn rendering_is_deterministic() {
     let a = render_scene(&scene).unwrap();
     let b = render_scene(&scene).unwrap();
     assert_eq!(a, b);
-}
-
-/// ENGINE-07: a filled band's RMS level does not depend on lattice density.
-#[test]
-fn band_loudness_is_independent_of_density() {
-    let shape = Shape::filled(Geometry::Rectangle {
-        a: Point::new(0.0, st(200.0)),
-        b: Point::new(1.0, st(400.0)),
-    })
-    .unwrap();
-    let rms = |density: f64| {
-        let mut scene = scene_with(1.0, shape.clone());
-        scene.settings.density_cents = density;
-        let out = render_scene(&scene).unwrap();
-        // Skip the first and last 50 ms to avoid edge effects.
-        let s = &out.left[2_400..out.left.len() - 2_400];
-        (s.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>() / s.len() as f64).sqrt()
-    };
-    let fine = rms(5.0);
-    let coarse = rms(20.0);
-    let db = 20.0 * (fine / coarse).log10();
-    assert!(
-        db.abs() < 1.0,
-        "loudness differs by {db:.2} dB across density"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -405,104 +355,6 @@ fn circle_outline_has_steady_edges() {
     assert!(mag[k] > 0.2 * max, "one tone clearly dominates");
 }
 
-/// Curve sound variants (M3 polish, for listening tests). On a circle centred
-/// at 69 st, the upper branch is near 75 st (622 Hz) and the lower near 63 st
-/// (311 Hz) at the middle time. Upper-only must sound the upper pitch and not
-/// the lower; lower-only the reverse; literal both.
-#[test]
-fn curve_sound_variants_select_branches() {
-    use synthesis_engine::CurveSound;
-    let circle = || {
-        Shape::outline(Geometry::Circle {
-            center: Point::new(1.0, 69.0),
-            radius_s: 0.5,
-            radius_st: 6.0,
-        })
-        .unwrap()
-    };
-    let render = |sound: CurveSound| {
-        let mut s = scene_with(2.0, circle());
-        s.settings.master_gain = 1.0;
-        s.voices[0].curve_sound = sound;
-        render_scene(&s).unwrap()
-    };
-    let n = 1 << 15;
-    let spectrum_at = |x: &[f32], hz: f64| {
-        let mut b = x.to_vec();
-        b.resize(n, 0.0);
-        let mag = spectrum(&b);
-        let k = (hz * n as f64 / f64::from(SR)).round() as usize;
-        mag[k - 3..=k + 3].iter().cloned().fold(0.0, f64::max)
-    };
-    let slice = |out: &Rendered| out.left[33_600..33_600 + 24_000].to_vec();
-    let (hi, lo) = (st_to_hz(75.0, A4), st_to_hz(63.0, A4));
-
-    let both = render(CurveSound::Literal);
-    assert!(spectrum_at(&slice(&both), hi) > 0.0 && spectrum_at(&slice(&both), lo) > 0.0);
-    // Compare time-domain level instead of a spectral bin: the sweeping branch
-    // leaks into nearby bins, but a silent branch adds no energy at all.
-    let rms =
-        |x: &[f32]| (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
-    let up = render(CurveSound::UpperOnly);
-    let dn = render(CurveSound::LowerOnly);
-    let both_rms = rms(&slice(&both));
-    assert!(rms(&slice(&up)) > 0.5, "upper-only is audible");
-    assert!(rms(&slice(&dn)) > 0.5, "lower-only is audible");
-    // Each single branch carries about half the energy of both together in
-    // this window, since one is near its peak and the other its trough.
-    assert!(
-        rms(&slice(&up)) < both_rms * 1.2,
-        "upper-only is not louder than both"
-    );
-    assert!(
-        rms(&slice(&dn)) < both_rms * 1.2,
-        "lower-only is not louder than both"
-    );
-    // Spectrally, the lower pitch is far weaker than the upper one when only the upper sounds.
-    let up_lo = spectrum_at(&slice(&up), lo);
-    let up_hi = spectrum_at(&slice(&up), hi);
-    assert!(up_lo < 0.05 * up_hi, "lower pitch {up_lo} vs upper {up_hi}");
-    let dn_hi = spectrum_at(&slice(&dn), hi);
-    let dn_lo = spectrum_at(&slice(&dn), lo);
-    assert!(dn_hi < 0.05 * dn_lo, "upper pitch {dn_hi} vs lower {dn_lo}");
-    // The long-fade variant renders the same pitches, only with slower ends.
-    let long = render(CurveSound::LongFade);
-    assert!(spectrum_at(&slice(&long), hi) > 0.0 && spectrum_at(&slice(&long), lo) > 0.0);
-}
-
-/// The four curve variants export as valid stereo WAV files, one per mode,
-/// and differ from each other, so the listening set is usable.
-#[test]
-fn curve_variants_export_as_distinct_wavs() {
-    use synthesis_engine::{BitDepth, CurveSound, write_wav};
-    let circle = Shape::outline(Geometry::Circle {
-        center: Point::new(1.0, 69.0),
-        radius_s: 0.5,
-        radius_st: 6.0,
-    })
-    .unwrap();
-    let mut data = Vec::new();
-    for mode in CurveSound::ALL {
-        let mut s = scene_with(2.0, circle.clone());
-        s.voices[0].curve_sound = mode;
-        let rendered = render_scene(&s).unwrap();
-        let mut buf = std::io::Cursor::new(Vec::new());
-        write_wav(&mut buf, &rendered, BitDepth::Int24).unwrap();
-        buf.set_position(0);
-        let mut r = hound::WavReader::new(buf).unwrap();
-        assert_eq!(r.spec().channels, 2);
-        assert_eq!(r.spec().sample_rate, 48_000);
-        let samples: Vec<i32> = r.samples::<i32>().map(|v| v.unwrap()).collect();
-        assert_eq!(samples.len(), 2 * 96_000);
-        data.push(samples);
-    }
-    for i in 0..data.len() {
-        for j in i + 1..data.len() {
-            assert_ne!(data[i], data[j], "variants {i} and {j} identical");
-        }
-    }
-}
-
 /// Master gain controls the output level linearly, and at a lower master the
 /// circle-plus-arc scene stays inside full scale (no clipping in the export).
 #[test]
@@ -538,47 +390,4 @@ fn master_gain_scales_output_and_removes_clipping() {
     let over = |r: &Rendered| r.left.iter().filter(|v| v.abs() > 1.0).count();
     assert!(over(&loud) > 0, "70% master clips this scene");
     assert_eq!(over(&quiet), 0, "30% master stays inside full scale");
-}
-
-/// Regression (heard on headphones): a 2 ms fade at an arc's start and end is
-/// an audible pop. The default curve sound must fade over about 15 ms at each
-/// end, not 2 ms, so the arc ends softly. The 2 ms variant stays available.
-#[test]
-fn default_curve_sound_has_soft_arc_ends() {
-    use synthesis_engine::CurveSound;
-    assert_eq!(CurveSound::default(), CurveSound::LongFade);
-    let arc = Shape::outline(Geometry::Arc {
-        center: Point::new(1.0, 69.0),
-        rx_s: 0.5,
-        ry_st: 6.0,
-        start_rad: 0.0,
-        sweep_rad: std::f64::consts::PI,
-    })
-    .unwrap();
-    // Peak amplitude in the 1 ms block that starts `ms` after the end.
-    let block_after_end = |mode: CurveSound, ms: usize| {
-        let mut s = scene_with(2.0, arc.clone());
-        s.settings.master_gain = 1.0;
-        s.voices[0].curve_sound = mode;
-        let out = render_scene(&s).unwrap();
-        let a = (1.5 * f64::from(SR)) as usize + ms * 48;
-        out.left[a..a + 48]
-            .iter()
-            .fold(0.0f32, |m, v| m.max(v.abs()))
-    };
-    // The 2 ms fade is finished from the third millisecond on; the 15 ms fade
-    // is still ringing down at 10 ms.
-    assert!(
-        block_after_end(CurveSound::Literal, 3) < 1e-3,
-        "short fade is over by 3 ms"
-    );
-    assert!(
-        block_after_end(CurveSound::LongFade, 3) > 0.5,
-        "long fade still high at 3 ms"
-    );
-    let long_10 = block_after_end(CurveSound::LongFade, 10);
-    assert!(
-        long_10 > 0.2 && long_10 < 0.5,
-        "long fade still ringing at 10 ms: {long_10}"
-    );
 }
