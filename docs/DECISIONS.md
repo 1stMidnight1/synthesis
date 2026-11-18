@@ -215,6 +215,8 @@ Four variants are selectable per voice ("Curve sound" in the sketch panel), so t
 
 **Known caveat for the listening test.** Both-branch variants sum two tones and reach full scale (peak 1.000 in the export); single-branch variants peak at the 0.7 master gain. They are about 3 dB apart, so compare them at matched level. Loudness is not normalised per variant; that is a decision for you.
 
+**Why "Literal" and "Both, long fades" sound the same (measured).** They are not bit-identical overall, but they differ only at the two turn points, the start and end of the circle. Over the middle of the circle (0.5 s to 0.75 s) the two renders are bit-identical. The differing region is about 30 ms of a 1.5 s render, about 0.8% of the energy, so a 15 ms versus 2 ms fade is a subtle change to the attack and release, not to the sustained sound. Judge the curve sound on the sustained middle, or use a longer fade to make the variant audible. An earlier draft of this diagnosis blamed phase advance; a measurement showed that was wrong and it was reverted.
+
 **Measured, not yet heard.** The two branches of a circle (about 311 Hz and 622 Hz at the middle time, an octave apart) sum to a waveform that is not a steady tone. I have not verified by ear whether that sounds rough. The earlier "beating" explanation was wrong: a 2:1 pair gives a periodic waveform, not a slow beat. The variants exist so the difference can be heard directly.
 
 ## M3 polish: curve variants test results (2026-11-17, macOS arm64)
