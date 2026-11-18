@@ -1042,3 +1042,46 @@ fn master_gain_same_value_is_not_an_edit() {
     u.app().set_master_gain(0.7);
     assert!(!u.app().doc.history.can_undo());
 }
+
+/// Regression (reported): pitch labels sit in a gutter left of the grid, not
+/// on top of it, and the ruler's time axis lines up with the grid's.
+#[test]
+fn pitch_labels_are_outside_the_grid() {
+    let mut u = Ui::new();
+    u.app().canvas.show_grid = false; // so the plot area is a flat colour
+    u.move_to(Pos2::new(5.0, 5.0));
+    let plot = u.view().rect;
+    let img = u.h.render().expect("render");
+    let ppp = img.width() as f32 / SIZE.x;
+    let px = |x: f32, y: f32| *img.get_pixel((x * ppp) as u32, (y * ppp) as u32);
+    // A strip of the plot just right of its left edge: no label text here,
+    // so every pixel matches the plot background.
+    let bg = px(plot.center().x, plot.center().y);
+    let mut stray = 0;
+    let mut y = plot.top() + 2.0;
+    while y < plot.bottom() - 2.0 {
+        for dx in 1..40 {
+            if px(plot.left() + dx as f32, y) != bg {
+                stray += 1;
+            }
+        }
+        y += 1.0;
+    }
+    assert_eq!(
+        stray, 0,
+        "{stray} non-background pixels at the grid's left edge"
+    );
+    // The gutter left of the plot does carry label text: it is not uniform.
+    let gutter_x = plot.left() - 20.0;
+    let mut distinct = std::collections::BTreeSet::new();
+    let mut y = plot.top();
+    while y < plot.bottom() {
+        let p = px(gutter_x, y);
+        distinct.insert((p[0], p[1], p[2]));
+        y += 1.0;
+    }
+    assert!(distinct.len() > 2, "gutter shows labels");
+    // Time 0 is at the plot's left edge in both the ruler and the grid.
+    let v = u.view();
+    assert!((v.x_of(0.0) - plot.left()).abs() < 0.5);
+}

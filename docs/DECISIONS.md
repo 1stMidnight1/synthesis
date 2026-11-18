@@ -104,7 +104,7 @@ All set to the plan's listed default, status **default** (change any by telling 
 - **Micro (R4).** Per voice as `Option<Micro>`. Phase is `frac(t / (period * period_scale))`, locked to the timeline. Offset is `depth * depth_scale * micro(phase)`. Depth defaults to semitones with a Hz toggle (D-4). Depth and period scales are separate (D-5). The micro shifts the sounding frequency only. Gating still uses the macro pitch (D-18).
 - **Micro shape.** Points on phase 0..1 with values -1..+1, linearly interpolated with wrap-around, so no per-sample stepping and no restart per shape. Presets (sine, triangle, saw, square) are plain point lists, so they stay editable (MICRO-02).
 - **Phase accumulators (M2 change).** M1 computed lattice phase from absolute time, which can't follow a moving or micro-shifted frequency without clicks. Every oscillator is now a phase accumulator. Its phase advances only while it is audible, and it resumes at its previous phase when re-gated. Outline tones and lattice bands both use this. M1 tests are unchanged and still pass.
-- **Volume lanes (R5, R6).** Each voice has a left and right lane. Each lane is a set of strokes (piecewise-linear percent over time). **Default, not confirmed in SPEC:** an empty lane is constant 100%. Once a lane has strokes, time outside every stroke is 0%. Overlapping strokes add (VOL-04), and the sum is clamped to 0..=200% (R5, D-10). Record this as a default; ask before changing it.
+- **Volume lanes (R5, R6).** Each voice has a left and right lane. Each lane is a set of strokes (piecewise-linear percent over time). **Superseded 2026-11-17 by a confirmed decision (see "Roadmap after M3"):** an empty lane is silent, and a new voice gets a default purple stroke. (Old default: an empty lane was constant 100%; time outside every stroke was 0%.) Overlapping strokes add (VOL-04), and the sum is clamped to 0..=200% (R5, D-10). Record this as a default; ask before changing it.
 - **Stereo (R6).** The mono voice signal is multiplied by each lane's gain. Left and right carry identical partials and differ only by gain.
 - **Master gain (R7).** Applied after the voice sum, as in M1.
 - **Scope.** No UI, no envelopes (M5), no lane tools beyond the data model (M4).
@@ -253,6 +253,20 @@ Four variants are selectable per voice ("Curve sound" in the sketch panel), so t
 **Still open.** The 15 ms default is a fix for the pop, not a tuned sound. The fade length could be shorter (for example 5 to 10 ms) if the start still reads as a pop-free attack too slow; that is a listening choice. Also, the built-in speaker may colour low frequencies, so a fade that is clean on headphones may still sound different there.
 
 **Test results.** `cargo test --workspace`: 48 app, 86 engine unit, 15 engine acceptance, 2 others. `cargo clippy --workspace --all-targets -- -D warnings`: pass. Windows type-checks: pass. Release build: pass.
+
+## Roadmap after M3 (2026-11-17, confirmed)
+
+**Order confirmed by the user:** M2.5 engine performance, then M4 volume canvas, then M5 (5a voices and master view, 5b micro editor and ADSR), then M7 projects, then M6 constraints, then M9 polish. Plugin (M8) stays deferred.
+
+**Volume lane rules (confirmed, for M4).**
+- A new voice gets a default purple stroke (both channels) at a reasonable level, shown on the volume canvas. Level to be chosen in M4 and recorded; proposed 80%.
+- An empty lane emits no sound (changes the M2 default, where an empty lane was 100%).
+- A gap between strokes is silent (unchanged).
+- Engine change and tests land in M4 with the lane UI. Consequence to handle there: a voice created before M4, or any lane whose strokes are all deleted, is silent, so the default stroke must exist from voice creation.
+
+**Pitch label gutter (2026-11-17).** Pitch labels moved out of the grid into a 56-point gutter on its left, right-aligned and centred on their lines, with a tick at the grid edge. The ruler reserves the same gutter so its time axis lines up with the grid. Labels that would be clipped at the gutter's top or bottom are skipped. Regression test `pitch_labels_are_outside_the_grid` renders the app and checks that the grid's left edge has no label pixels.
+
+**Curve sound control.** The panel control was a combo box with its label to the side, which made the row wider than the panel and rendered as a tall box. The label is now on its own line, the box fills the panel width, and it shows a short name ("Long fades"). It stays named for accessibility through `labelled_by`.
 
 ## Proposed
 

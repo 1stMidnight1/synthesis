@@ -35,6 +35,10 @@ use synthesis_engine::{Division, Geometry, Point, Shape, Tempo};
 use crate::document::Document;
 use crate::view::{self, View};
 
+/// Width of the pitch-label gutter left of the grid, in screen points. The
+/// ruler reserves the same width, so the time axes line up.
+pub const GUTTER_PX: f32 = 56.0;
+
 /// Pick radius for shapes, in screen points.
 pub const PICK_PX: f32 = 7.0;
 /// Pick radius for handles, in screen points.
@@ -665,9 +669,20 @@ pub fn toggle_fill_selected(doc: &mut Document, state: &mut CanvasState) {
 /// Draw the canvas and handle its input.
 pub fn show(ui: &mut Ui, doc: &mut Document, state: &mut CanvasState, a4: f64) -> Response {
     let size = Vec2::new(ui.available_width(), ui.available_height().max(120.0));
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let (full, _) = ui.allocate_exact_size(size, Sense::hover());
+    // Pitch labels live in a gutter to the left; the grid and all interaction
+    // live in the plot rectangle, so labels never sit on top of the grid.
+    let gutter = Rect::from_min_max(full.min, Pos2::new(full.left() + GUTTER_PX, full.bottom()));
+    let rect = Rect::from_min_max(Pos2::new(gutter.right(), full.top()), full.max);
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with("synthesis_canvas"),
+        Sense::click_and_drag(),
+    );
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::from_gray(22));
+    let gutter_painter = ui.painter_at(gutter);
+    gutter_painter.rect_filled(gutter, 0.0, Color32::from_gray(30));
     state.rect = Some(rect);
 
     navigate(ui, &response, rect, doc, state);
@@ -689,7 +704,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, state: &mut CanvasState, a4: f64) -
         state.message = Some((std::mem::take(&mut state.status), now));
     }
 
-    paint(&painter, &v, doc, state);
+    paint(&painter, &gutter_painter, gutter, &v, doc, state);
     set_cursor(ui, &response, &v, doc, state);
     response
 }
@@ -1016,8 +1031,15 @@ pub fn voice_color(index: usize) -> Color32 {
 const SELECT_COLOR: Color32 = Color32::from_rgb(255, 205, 70);
 const PREVIEW_COLOR: Color32 = Color32::from_rgb(235, 235, 235);
 
-fn paint(p: &egui::Painter, v: &View, doc: &Document, state: &CanvasState) {
-    paint_grid(p, v, state);
+fn paint(
+    p: &egui::Painter,
+    gp: &egui::Painter,
+    gutter: Rect,
+    v: &View,
+    doc: &Document,
+    state: &CanvasState,
+) {
+    paint_grid(p, gp, gutter, v, state);
     let shapes = voice_shapes(doc);
 
     // Shapes, with the in-progress edit applied for preview.
@@ -1209,7 +1231,7 @@ fn paint_fill(p: &egui::Painter, v: &View, edges: &[synthesis_engine::Segment], 
     p.add(EShape::mesh(mesh));
 }
 
-fn paint_grid(p: &egui::Painter, v: &View, state: &CanvasState) {
+fn paint_grid(p: &egui::Painter, gp: &egui::Painter, gutter: Rect, v: &View, state: &CanvasState) {
     let minor = Stroke::new(1.0, Color32::from_gray(34));
     let beat = Stroke::new(1.0, Color32::from_gray(48));
     let bar = Stroke::new(1.0, Color32::from_gray(70));
@@ -1299,21 +1321,27 @@ fn paint_grid(p: &egui::Painter, v: &View, state: &CanvasState) {
                 format!("{:.0} Hz", synthesis_engine::pitch::st_to_hz(st, v.a4))
             }
         };
-        let pos = Pos2::new(r.left() + 4.0, y - 2.0);
-        let galley = p.layout_no_wrap(
+        // Right-aligned in the gutter, centred on the line, with a short tick
+        // at the grid edge. Labels too close to the gutter's top or bottom are
+        // skipped rather than clipped.
+        let font = egui::FontId::monospace(11.0);
+        let half = 7.0;
+        if y - half < gutter.top() || y + half > gutter.bottom() {
+            continue;
+        }
+        gp.text(
+            Pos2::new(gutter.right() - 7.0, y),
+            egui::Align2::RIGHT_CENTER,
             text,
-            egui::FontId::monospace(12.0),
-            Color32::from_gray(if is_octave { 215 } else { 150 }),
+            font,
+            Color32::from_gray(if is_octave { 225 } else { 150 }),
         );
-        let bg = Rect::from_min_size(
-            pos - Vec2::new(2.0, galley.size().y),
-            galley.size() + Vec2::new(4.0, 2.0),
-        );
-        p.rect_filled(bg, 2.0, Color32::from_black_alpha(150));
-        p.galley(
-            pos - Vec2::new(0.0, galley.size().y),
-            galley,
-            Color32::WHITE,
+        gp.line_segment(
+            [
+                Pos2::new(gutter.right() - 4.0, y),
+                Pos2::new(gutter.right(), y),
+            ],
+            Stroke::new(1.0, Color32::from_gray(if is_octave { 160 } else { 90 })),
         );
     }
 }

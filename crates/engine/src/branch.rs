@@ -58,6 +58,16 @@ impl CurveSound {
         CurveSound::LowerOnly,
     ];
 
+    /// Short name for narrow controls.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            CurveSound::Literal => "Short fades",
+            CurveSound::LongFade => "Long fades",
+            CurveSound::UpperOnly => "Upper only",
+            CurveSound::LowerOnly => "Lower only",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             CurveSound::Literal => "Both, short fades (2 ms)",
