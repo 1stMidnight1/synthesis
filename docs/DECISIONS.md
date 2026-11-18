@@ -365,7 +365,9 @@ Confirmed by the user: volume is a second tab of the same canvas, not a separate
 
 **Test results (2026-11-18, macOS arm64).** `cargo fmt --all -- --check`, `cargo test --workspace` (154 passing: 56 app, 86 engine unit, 11 engine acceptance, 1 golden), `cargo clippy --workspace --all-targets -- -D warnings`, Windows type-checks for engine and app, and the release build all pass.
 
-**Not verified.** Select and move for lane strokes. Freehand (deferred, as agreed). Audible result of the volume lanes; the new default volume is 75%, and its loudness should be heard.
+**Select on lane strokes (added, same day).** In the Volume tab, Select picks a lane stroke by press and moves it by drag, along time and level, as one undo step. The shape press and release path is skipped in the Volume tab, so Select never grabs an invisible shape. The cause of the first failure was that the shape release block cleared the stroke drag before the stroke code could read it. Tone is unchanged (57 app tests pass, including the existing Tone Select, drag and handle tests). Lane strokes have no per-point handles yet; moving a whole stroke is what is implemented.
+
+**Not verified.** Per-point handles on lane strokes. Freehand (deferred, as agreed). Audible result of the volume lanes; the new default volume is 75%, and its loudness should be heard.
 
 ## Proposed
 

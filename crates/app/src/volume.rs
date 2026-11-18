@@ -50,9 +50,7 @@ pub fn finish_points(pending: &mut Vec<Point>, channel: Channel) -> Option<Edit>
         return None;
     }
     let points: Vec<LanePoint> = pts.iter().map(|q| LanePoint::new(q.t, q.st)).collect();
-    Stroke::new(points)
-        .ok()
-        .map(|s| Edit::AddStroke(channel, s))
+    Stroke::new(points).ok().map(|s| Edit::Add(channel, s))
 }
 
 /// Build a point list for a line between two lane points (level already snapped).
@@ -64,16 +62,19 @@ pub fn line_stroke(a: (f64, f64), b: (f64, f64)) -> Option<Stroke> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Edit {
     /// Add a stroke to the lanes named by `channel`.
-    AddStroke(Channel, Stroke),
+    Add(Channel, Stroke),
     /// Remove stroke `index` from the lanes named by `channel`. For `Both`,
     /// the same index is removed from both lanes.
-    RemoveStroke(Channel, usize),
+    Remove(Channel, usize),
+    /// Move stroke `index` by `dt` seconds along time and `dl` percent along
+    /// the level axis. The result is clamped to 0..=200 percent and to t >= 0.
+    Move(Channel, usize, f64, f64),
 }
 
 /// Apply an edit to a voice. Returns false if it would be invalid.
 pub fn apply(voice: &mut synthesis_engine::Voice, edit: &Edit) -> bool {
     match edit {
-        Edit::AddStroke(ch, stroke) => {
+        Edit::Add(ch, stroke) => {
             if matches!(ch, Channel::Left | Channel::Both) {
                 voice.lane_left.strokes.push(stroke.clone());
             }
@@ -82,7 +83,30 @@ pub fn apply(voice: &mut synthesis_engine::Voice, edit: &Edit) -> bool {
             }
             true
         }
-        Edit::RemoveStroke(ch, i) => {
+        Edit::Move(ch, i, dt, dl) => {
+            let moved = |st: &Stroke| -> Option<Stroke> {
+                let points: Vec<LanePoint> = st
+                    .points
+                    .iter()
+                    .map(|q| {
+                        LanePoint::new((q.t_s + dt).max(0.0), (q.percent + dl).clamp(0.0, 200.0))
+                    })
+                    .collect();
+                Stroke::new(points).ok()
+            };
+            if matches!(ch, Channel::Left | Channel::Both)
+                && let Some(s) = voice.lane_left.strokes.get(*i).and_then(moved)
+            {
+                voice.lane_left.strokes[*i] = s;
+            }
+            if matches!(ch, Channel::Right | Channel::Both)
+                && let Some(s) = voice.lane_right.strokes.get(*i).and_then(moved)
+            {
+                voice.lane_right.strokes[*i] = s;
+            }
+            true
+        }
+        Edit::Remove(ch, i) => {
             if matches!(ch, Channel::Left | Channel::Both) && *i < voice.lane_left.strokes.len() {
                 voice.lane_left.strokes.remove(*i);
             }
@@ -117,13 +141,13 @@ mod tests {
         let base_l = v.lane_left.strokes.len();
         let base_r = v.lane_right.strokes.len();
         let s = line_stroke((0.0, 50.0), (1.0, 50.0)).unwrap();
-        assert!(apply(&mut v, &Edit::AddStroke(Channel::Left, s.clone())));
+        assert!(apply(&mut v, &Edit::Add(Channel::Left, s.clone())));
         assert_eq!(v.lane_left.strokes.len(), base_l + 1);
         assert_eq!(v.lane_right.strokes.len(), base_r, "left only");
-        assert!(apply(&mut v, &Edit::AddStroke(Channel::Both, s)));
+        assert!(apply(&mut v, &Edit::Add(Channel::Both, s)));
         assert_eq!(v.lane_left.strokes.len(), base_l + 2);
         assert_eq!(v.lane_right.strokes.len(), base_r + 1);
-        assert!(apply(&mut v, &Edit::RemoveStroke(Channel::Both, base_l)));
+        assert!(apply(&mut v, &Edit::Remove(Channel::Both, base_l)));
         assert_eq!(v.lane_left.strokes.len(), base_l + 1);
     }
 }
@@ -203,7 +227,7 @@ mod pick_tests {
             pick_stroke(&voice.lane_left.strokes, &v, between, 6.0),
             None
         );
-        assert!(apply(&mut voice, &Edit::RemoveStroke(Channel::Left, 0)));
+        assert!(apply(&mut voice, &Edit::Remove(Channel::Left, 0)));
         assert_eq!(voice.lane_left.strokes.len(), 1);
     }
 }

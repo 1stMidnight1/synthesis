@@ -139,6 +139,8 @@ impl Tool {
 pub enum Drag {
     /// Move the selected shapes by the pointer delta from `origin`.
     Move { origin: Point },
+    /// Move the selected lane stroke by the pointer delta from `origin`.
+    MoveStroke { origin: Point },
     /// Drag one handle of one shape.
     Handle { shape: usize, kind: HandleKind },
     /// Box selection from `origin` (screen), adding to `base`.
@@ -167,6 +169,9 @@ pub struct CanvasState {
     /// Points placed so far by the active drawing tool.
     pub pending: Vec<Point>,
     pub selected: BTreeSet<usize>,
+    /// The selected lane stroke in the Volume tab (index into the channel's
+    /// strokes). Separate from `selected`, which is for shapes in the Tone tab.
+    pub selected_stroke: Option<usize>,
     pub drag: Option<Drag>,
     /// Shape index under the pointer, for hover highlighting.
     pub hover: Option<usize>,
@@ -187,6 +192,7 @@ impl Default for CanvasState {
     fn default() -> Self {
         Self {
             tool: Tool::Select,
+            selected_stroke: None,
             mode: crate::view::VerticalMode::Tone,
             channel: crate::volume::Channel::Both,
             snap: true,
@@ -710,8 +716,11 @@ fn handle_pointer(
         return;
     }
 
-    // Press: decide what a drag would do.
-    if response.drag_started_by(primary)
+    // Press: decide what a drag would do. In the Volume tab, Select works on
+    // lane strokes (below), never on shapes, so the shape path is skipped.
+    let in_volume = v.mode == crate::view::VerticalMode::Volume;
+    if !in_volume
+        && response.drag_started_by(primary)
         && let Some(press) = ui.input(|i| i.pointer.press_origin())
     {
         let at = snap(press, v, state, &shapes_now, None, mods.alt).0;
@@ -782,7 +791,7 @@ fn handle_pointer(
     }
 
     // Release.
-    if response.drag_stopped_by(primary) {
+    if !in_volume && response.drag_stopped_by(primary) {
         let end = response
             .interact_pointer_pos()
             .or(pointer)
@@ -809,6 +818,42 @@ fn handle_pointer(
     }
 
     // Clicks.
+    if v.mode == crate::view::VerticalMode::Volume
+        && state.tool == Tool::Select
+        && response.drag_started_by(primary)
+        && let Some(press) = ui.input(|i| i.pointer.press_origin())
+    {
+        let voice = doc.selected_voice;
+        let strokes = lane_strokes_for(doc, voice, state.channel);
+        state.selected_stroke = crate::volume::pick_stroke(&strokes, v, press, PICK_PX);
+        if state.selected_stroke.is_some() {
+            state.drag = Some(Drag::MoveStroke {
+                origin: v.screen_to_point(press),
+            });
+        }
+    }
+    if v.mode == crate::view::VerticalMode::Volume
+        && state.tool == Tool::Select
+        && response.drag_stopped_by(primary)
+        && let Some(Drag::MoveStroke { origin }) = state.drag.take()
+        && let Some(i) = state.selected_stroke
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let end = v.screen_to_point(pos);
+        let dt = end.t - origin.t;
+        let dl = if state.snap {
+            crate::volume::snap_level(end.st, true) - crate::volume::snap_level(origin.st, true)
+        } else {
+            end.st - origin.st
+        };
+        let ch = state.channel;
+        apply_volume_edit(
+            doc,
+            state,
+            crate::volume::Edit::Move(ch, i, dt, dl),
+            "Stroke moved",
+        );
+    }
     if response.clicked_by(primary)
         && !ui.input(|i| i.key_down(egui::Key::Space))
         && v.mode == crate::view::VerticalMode::Volume
@@ -853,6 +898,20 @@ fn handle_pointer(
     }
 }
 
+/// The strokes the channel's edits act on: the left lane for Left, the right
+/// lane for Right, and the left lane for Both (Both strokes are in both lanes).
+fn lane_strokes_for(
+    doc: &Document,
+    voice: usize,
+    ch: crate::volume::Channel,
+) -> Vec<synthesis_engine::Stroke> {
+    let vsc = &doc.scene.voices[voice];
+    match ch {
+        crate::volume::Channel::Right => vsc.lane_right.strokes.clone(),
+        _ => vsc.lane_left.strokes.clone(),
+    }
+}
+
 /// A click in the Volume tab. Line and Polyline build a lane stroke from
 /// (time, level) points; Delete removes the stroke under the pointer. Every
 /// change is one undo step, through `Document::edit`.
@@ -867,7 +926,7 @@ fn volume_click(doc: &mut Document, state: &mut CanvasState, v: &View, pos: Pos2
                 _ => doc.scene.voices[voice].lane_left.strokes.clone(),
             };
             if let Some(i) = volume::pick_stroke(&strokes, v, pos, PICK_PX) {
-                let edit = Edit::RemoveStroke(ch, i);
+                let edit = Edit::Remove(ch, i);
                 apply_volume_edit(doc, state, edit, "Stroke deleted");
             } else {
                 state.status = "Click on a stroke to delete it".into();
@@ -894,8 +953,8 @@ fn volume_click(doc: &mut Document, state: &mut CanvasState, v: &View, pos: Pos2
                 return;
             }
             let a = state.pending[0];
-            let edit = volume::line_stroke((a.t, a.st), p)
-                .map(|stroke| Edit::AddStroke(state.channel, stroke));
+            let edit =
+                volume::line_stroke((a.t, a.st), p).map(|stroke| Edit::Add(state.channel, stroke));
             state.pending = vec![Point::new(p.0, p.1)];
             if let Some(edit) = edit {
                 apply_volume_edit(doc, state, edit, "Stroke added");
@@ -970,7 +1029,7 @@ fn set_cursor(ui: &Ui, response: &Response, v: &View, doc: &Document, state: &Ca
     }
     let icon = match &state.drag {
         Some(Drag::Pan) => CursorIcon::Grabbing,
-        Some(Drag::Move { .. }) => CursorIcon::Grabbing,
+        Some(Drag::Move { .. }) | Some(Drag::MoveStroke { .. }) => CursorIcon::Grabbing,
         Some(Drag::Handle { .. }) => CursorIcon::Grabbing,
         Some(Drag::Box { .. }) | Some(Drag::Draw) => CursorIcon::Crosshair,
         None => {

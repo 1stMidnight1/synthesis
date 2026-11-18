@@ -1104,3 +1104,41 @@ fn volume_delete_removes_the_stroke_under_the_pointer() {
         "undo restores it"
     );
 }
+
+/// Volume tab, Select: dragging a lane stroke moves it on the level axis, as
+/// one undo step, and no shape is touched.
+#[test]
+fn volume_select_drag_moves_a_lane_stroke() {
+    let mut u = Ui::new();
+    u.app().canvas.mode = crate::view::VerticalMode::Volume;
+    u.app().canvas.channel = crate::volume::Channel::Left;
+    u.app().canvas.snap = false;
+    {
+        let v = &mut u.app().doc.scene.voices[0];
+        v.lane_left = synthesis_engine::Lane::default();
+        v.lane_right = synthesis_engine::Lane::default();
+        let s = synthesis_engine::Stroke::new(vec![
+            synthesis_engine::LanePoint::new(0.0, 100.0),
+            synthesis_engine::LanePoint::new(4.0, 100.0),
+        ])
+        .unwrap();
+        v.lane_left.strokes.push(s);
+    }
+    u.tool(Tool::Select);
+    let from = u.screen(2.0, 100.0);
+    let to = u.screen(2.0, 150.0);
+    u.drag(from, to);
+    let s = &u.app().doc.scene.voices[0].lane_left.strokes[0];
+    assert!(
+        (s.points[0].percent - 150.0).abs() < 1.0,
+        "stroke moved to 150%, now {}",
+        s.points[0].percent
+    );
+    assert!(u.shapes().is_empty(), "no shape was created or moved");
+    u.app().undo();
+    let back = u.app().doc.scene.voices[0].lane_left.strokes[0].points[0].percent;
+    assert!(
+        (back - 100.0).abs() < 1e-6,
+        "undo restores 100%, now {back}"
+    );
+}
