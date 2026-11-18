@@ -369,6 +369,27 @@ Confirmed by the user: volume is a second tab of the same canvas, not a separate
 
 **Not verified.** Per-point handles on lane strokes. Freehand (deferred, as agreed). Audible result of the volume lanes; the new default volume is 75%, and its loudness should be heard.
 
+## Volume range 0–100% and drawing fixes (2026-11-18, confirmed by the user)
+
+Confirmed by the user: the volume range is 0–100%, not 0–200%. The lane is a level from silent (0) to full (100). Overlapping strokes still add and the sum is clamped to 100%.
+
+**Changes.**
+- Engine: `LANE_MAX_PERCENT` is 100. A stroke point above 100 is invalid. The summed gain is clamped to 0..=1.
+- Engine: a stroke's time range is half-open, `[start, end)`. Two strokes that meet at a point (a chained line) no longer both count at the joint, which would have doubled the level there.
+- App: the volume axis tops out at 100%. Levels a user draws or drags are clamped to 0..=100 at the point they are made (`snap_level`), instead of being discarded by validation.
+- App: Volume Select picks a stroke within `PICK_PX` of the press. The tests' stroke positions were corrected to lie under the press.
+
+**What was broken and why.**
+- A drawn point above the lane maximum was rejected by validation and the stroke was dropped with no message. Now it is clamped and drawn.
+- Several tests asserted 150% and 200% values that the new range does not allow. They were moved to values within 0–100%.
+- The Select move test pressed at 50% on a stroke that sat at 100%, so the press missed. The test stroke now starts under the press.
+
+**Tone tools.** Click-to-draw for every shape tool is covered by `each_tool_draws_a_shape`. Drag-to-draw for line and rectangle is now covered by two new tests. Both pass. The user reported the drawing tools as broken; these tests show they work in the harness, so the remaining failure is not reproduced by these tests. The user should try it in the app and describe the exact step that fails.
+
+**Test results (2026-11-18, macOS arm64).** 159 passing across the workspace. `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, Windows type-checks for engine and app, and the release build all pass.
+
+**Not verified.** Whether the user's drawing failure is the same as what the tests cover. Audible level of 0–100% lanes.
+
 ## Proposed
 
 _None yet._

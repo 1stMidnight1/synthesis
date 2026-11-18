@@ -1044,8 +1044,8 @@ fn volume_line_click_click_adds_a_stroke_and_undoes() {
         v.lane_left = synthesis_engine::Lane::default();
         v.lane_right = synthesis_engine::Lane::default();
     }
-    let a = u.screen(0.5, 150.0);
-    let b = u.screen(2.5, 60.0);
+    let a = u.screen(0.5, 75.0);
+    let b = u.screen(2.5, 40.0);
     u.click(a);
     u.click(b);
     let strokes = u.app().doc.scene.voices[0].lane_left.strokes.clone();
@@ -1056,12 +1056,12 @@ fn volume_line_click_click_adds_a_stroke_and_undoes() {
     );
     let p = &strokes[0].points;
     assert!(
-        (p[0].t_s - 0.5).abs() < 1e-3 && (p[0].percent - 150.0).abs() < 0.5,
+        (p[0].t_s - 0.5).abs() < 1e-3 && (p[0].percent - 75.0).abs() < 0.5,
         "start {:?}",
         p[0]
     );
     assert!(
-        (p[1].t_s - 2.5).abs() < 1e-3 && (p[1].percent - 60.0).abs() < 0.5,
+        (p[1].t_s - 2.5).abs() < 1e-3 && (p[1].percent - 40.0).abs() < 0.5,
         "end {:?}",
         p[1]
     );
@@ -1083,15 +1083,15 @@ fn volume_delete_removes_the_stroke_under_the_pointer() {
         v.lane_left = synthesis_engine::Lane::default();
         v.lane_right = synthesis_engine::Lane::default();
         let s = synthesis_engine::Stroke::new(vec![
-            synthesis_engine::LanePoint::new(0.0, 120.0),
-            synthesis_engine::LanePoint::new(4.0, 120.0),
+            synthesis_engine::LanePoint::new(0.0, 80.0),
+            synthesis_engine::LanePoint::new(4.0, 80.0),
         ])
         .unwrap();
         v.lane_left.strokes.push(s.clone());
         v.lane_right.strokes.push(s);
     }
     u.tool(Tool::Delete);
-    let on = u.screen(2.0, 120.0);
+    let on = u.screen(2.0, 80.0);
     u.click(on);
     assert!(
         u.app().doc.scene.voices[0].lane_left.strokes.is_empty(),
@@ -1117,28 +1117,53 @@ fn volume_select_drag_moves_a_lane_stroke() {
         let v = &mut u.app().doc.scene.voices[0];
         v.lane_left = synthesis_engine::Lane::default();
         v.lane_right = synthesis_engine::Lane::default();
+        // Starts at 50% so the press below lands on it.
         let s = synthesis_engine::Stroke::new(vec![
-            synthesis_engine::LanePoint::new(0.0, 100.0),
-            synthesis_engine::LanePoint::new(4.0, 100.0),
+            synthesis_engine::LanePoint::new(0.0, 50.0),
+            synthesis_engine::LanePoint::new(4.0, 50.0),
         ])
         .unwrap();
         v.lane_left.strokes.push(s);
     }
     u.tool(Tool::Select);
-    let from = u.screen(2.0, 100.0);
-    let to = u.screen(2.0, 150.0);
+    let from = u.screen(2.0, 50.0);
+    let to = u.screen(2.0, 75.0);
     u.drag(from, to);
     let s = &u.app().doc.scene.voices[0].lane_left.strokes[0];
     assert!(
-        (s.points[0].percent - 150.0).abs() < 1.0,
-        "stroke moved to 150%, now {}",
+        (s.points[0].percent - 75.0).abs() < 1.0,
+        "stroke moved to 75%, now {}",
         s.points[0].percent
     );
     assert!(u.shapes().is_empty(), "no shape was created or moved");
     u.app().undo();
     let back = u.app().doc.scene.voices[0].lane_left.strokes[0].points[0].percent;
-    assert!(
-        (back - 100.0).abs() < 1e-6,
-        "undo restores 100%, now {back}"
-    );
+    assert!((back - 50.0).abs() < 1e-6, "undo restores 50%, now {back}");
+}
+
+/// Drawing by dragging, which is how most people draw: press, drag, release.
+/// A line should appear from where the press started to where it ended.
+#[test]
+fn tone_line_drawn_by_drag_creates_a_line() {
+    let mut u = Ui::new();
+    u.tool(Tool::Line);
+    let from = u.screen(0.5, 60.0);
+    let to = u.screen(2.0, 64.0);
+    u.drag(from, to);
+    let shapes = u.shapes();
+    assert_eq!(shapes.len(), 1, "one line from the drag: {shapes:?}");
+    assert!(matches!(shapes[0].geometry, Geometry::Line { .. }));
+}
+
+/// Drawing a rectangle by dragging from one corner to the opposite corner.
+#[test]
+fn tone_rectangle_drawn_by_drag_creates_a_rectangle() {
+    let mut u = Ui::new();
+    u.tool(Tool::Rectangle);
+    let from = u.screen(0.5, 60.0);
+    let to = u.screen(2.0, 64.0);
+    u.drag(from, to);
+    let shapes = u.shapes();
+    assert_eq!(shapes.len(), 1, "one rectangle from the drag: {shapes:?}");
+    assert!(matches!(shapes[0].geometry, Geometry::Rectangle { .. }));
 }

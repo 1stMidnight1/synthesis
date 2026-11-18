@@ -7,12 +7,14 @@
 //! - An empty lane emits no sound (silent). A new voice gets a default purple
 //!   stroke at 75% on both channels, so it sounds from creation.
 //! - Time outside every stroke, or in a gap between strokes, is silent.
-//! - Overlapping strokes add (VOL-04), and the sum is clamped to 0..=200% (R5).
+//! - Overlapping strokes add (VOL-04), and the sum is clamped to 0..=100%
+//!   (R5; range changed from 0..=200% by the user, 2026-11-18).
 
 use crate::error::{EngineError, Result};
 
-/// Maximum summed lane value in percent (R5, D-10).
-pub const LANE_MAX_PERCENT: f64 = 200.0;
+/// Maximum lane value in percent, for one stroke and for the sum (R5, D-10;
+/// 100% since 2026-11-18, confirmed by the user).
+pub const LANE_MAX_PERCENT: f64 = 100.0;
 
 /// Level of the default stroke a new voice gets on each channel (confirmed
 /// 2026-11-18). Chosen so a fresh voice is audible without clipping.
@@ -55,7 +57,7 @@ impl Stroke {
                 return bad("non-finite point");
             }
             if !(0.0..=LANE_MAX_PERCENT).contains(&p.percent) {
-                return bad("percent must be in 0..=200");
+                return bad("percent must be in 0..=100");
             }
             if p.t_s < last_t {
                 return bad("stroke times must be nondecreasing");
@@ -66,11 +68,14 @@ impl Stroke {
     }
 
     /// Stroke value in percent at `t`, or `None` outside its time range.
+    ///
+    /// The range is half-open, `[first, last)`, so two strokes that meet at a
+    /// point (a chained line) do not both count there and double the level.
     pub fn value_at(&self, t: f64) -> Option<f64> {
         let p = &self.points;
         let first = p.first()?;
         let last = p.last()?;
-        if t < first.t_s || t > last.t_s {
+        if t < first.t_s || t >= last.t_s {
             return None;
         }
         let idx = p.partition_point(|q| q.t_s <= t);
@@ -102,7 +107,7 @@ impl Lane {
     }
 
     /// Linear gain at `t` seconds (R5): `sum(stroke percent) / 100`, clamped to
-    /// 0..=2. An empty lane, and any time outside every stroke, gives 0 (silent).
+    /// 0..=1. An empty lane, and any time outside every stroke, gives 0 (silent).
     pub fn gain_at(&self, t: f64) -> f64 {
         let sum: f64 = self.strokes.iter().filter_map(|s| s.value_at(t)).sum();
         (sum / 100.0).clamp(0.0, LANE_MAX_PERCENT / 100.0)
@@ -155,7 +160,9 @@ mod tests {
         assert_eq!(s.value_at(4.0), None);
         assert!((s.value_at(2.0).unwrap() - 50.0).abs() < 1e-12);
         assert_eq!(s.value_at(1.0), Some(0.0));
-        assert_eq!(s.value_at(3.0), Some(100.0));
+        // Half-open: the end instant belongs to whatever follows the stroke.
+        assert_eq!(s.value_at(3.0), None);
+        assert!((s.value_at(2.999_999).unwrap() - 100.0).abs() < 1e-3);
     }
 
     #[test]
@@ -167,15 +174,25 @@ mod tests {
     }
 
     #[test]
-    fn summed_value_is_clamped_to_200_percent() {
+    fn summed_value_is_clamped_to_100_percent() {
         let lane = Lane {
-            strokes: vec![
-                flat(0.0, 1.0, 100.0),
-                flat(0.0, 1.0, 100.0),
-                flat(0.0, 1.0, 100.0),
-            ],
+            strokes: vec![flat(0.0, 1.0, 75.0), flat(0.0, 1.0, 75.0)],
         };
-        assert!((lane.gain_at(0.5) - 2.0).abs() < 1e-12);
+        assert!((lane.gain_at(0.5) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stroke_above_100_percent_is_invalid() {
+        assert!(Stroke::new(vec![LanePoint::new(0.0, 101.0), LanePoint::new(1.0, 50.0)]).is_err());
+    }
+
+    #[test]
+    fn strokes_that_meet_do_not_double_at_the_joint() {
+        let lane = Lane {
+            strokes: vec![flat(0.0, 1.0, 60.0), flat(1.0, 2.0, 60.0)],
+        };
+        assert!((lane.gain_at(1.0) - 0.6).abs() < 1e-12);
+        assert!((lane.gain_at(0.999) - 0.6).abs() < 1e-12);
     }
 
     #[test]

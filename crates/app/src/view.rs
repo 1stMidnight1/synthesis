@@ -37,12 +37,12 @@ pub enum VerticalMode {
     /// Y is pitch (semitones, Hz). The default.
     #[default]
     Tone,
-    /// Y is level in percent, 0 at the bottom to `LEVEL_MAX` at the top (R5).
+    /// Y is level in percent, 0 at the bottom to `LEVEL_MAX` (100) at the top (R5).
     Volume,
 }
 
-/// Top of the volume axis, in percent (R5, D-10).
-pub const LEVEL_MAX: f64 = 200.0;
+/// Top of the volume axis, in percent (R5; 100% since 2026-11-18).
+pub const LEVEL_MAX: f64 = synthesis_engine::lanes::LANE_MAX_PERCENT;
 
 impl View {
     pub fn x_of(&self, t: f64) -> f32 {
@@ -382,13 +382,14 @@ mod mode_tests {
         assert!((back.st - 64.0).abs() < 1e-3);
     }
 
-    /// Volume: 0% is the bottom edge, LEVEL_MAX is the top edge, and 100% is the middle.
+    /// Volume: 0% is the bottom edge, 100% the top edge, and 50% the middle.
     #[test]
-    fn volume_axis_runs_0_to_200_percent_bottom_to_top() {
+    fn volume_axis_runs_0_to_100_percent_bottom_to_top() {
         let v = view(VerticalMode::Volume);
+        assert_eq!(LEVEL_MAX, 100.0);
         assert!((v.y_of(0.0) - v.rect.bottom()).abs() < 1e-3);
         assert!((v.y_of(LEVEL_MAX) - v.rect.top()).abs() < 1e-3);
-        assert!((v.y_of(100.0) - v.rect.center().y).abs() < 1e-3);
+        assert!((v.y_of(50.0) - v.rect.center().y).abs() < 1e-3);
         let back = v.st_of(v.y_of(75.0));
         assert!((back - 75.0).abs() < 1e-6);
     }

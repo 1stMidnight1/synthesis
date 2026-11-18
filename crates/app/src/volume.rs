@@ -11,6 +11,7 @@
 //! stored on the lane, so undo, saving and export all see the same data.
 
 use eframe::egui::{Color32, Pos2};
+use synthesis_engine::lanes::LANE_MAX_PERCENT as LANE_MAX;
 use synthesis_engine::{LanePoint, Stroke};
 
 use crate::view::View;
@@ -33,13 +34,17 @@ pub enum Channel {
     Both,
 }
 
-/// Snap a level to the nearest grid line, if snapping is on.
+/// Snap a level to the nearest grid line, if snapping is on, and keep it on
+/// the lane range (0..=`LANE_MAX`). A level dragged past the top is clamped,
+/// not dropped, so the stroke is still drawn where the user put it.
 pub fn snap_level(percent: f64, snap: bool) -> f64 {
-    if snap {
+    let max = synthesis_engine::lanes::LANE_MAX_PERCENT;
+    let p = if snap {
         (percent / LEVEL_STEP).round() * LEVEL_STEP
     } else {
         percent
-    }
+    };
+    p.clamp(0.0, max)
 }
 
 /// Finish a polyline from its pending points (two or more) into one stroke
@@ -67,7 +72,7 @@ pub enum Edit {
     /// the same index is removed from both lanes.
     Remove(Channel, usize),
     /// Move stroke `index` by `dt` seconds along time and `dl` percent along
-    /// the level axis. The result is clamped to 0..=200 percent and to t >= 0.
+    /// the level axis. The result is clamped to 0..=100 percent and to t >= 0.
     Move(Channel, usize, f64, f64),
 }
 
@@ -89,7 +94,7 @@ pub fn apply(voice: &mut synthesis_engine::Voice, edit: &Edit) -> bool {
                     .points
                     .iter()
                     .map(|q| {
-                        LanePoint::new((q.t_s + dt).max(0.0), (q.percent + dl).clamp(0.0, 200.0))
+                        LanePoint::new((q.t_s + dt).max(0.0), (q.percent + dl).clamp(0.0, LANE_MAX))
                     })
                     .collect();
                 Stroke::new(points).ok()
@@ -211,18 +216,18 @@ mod pick_tests {
     fn pick_finds_the_stroke_under_the_pointer_and_delete_removes_it() {
         let v = lane_view();
         let mut voice = Voice::new("v");
-        // Two flat strokes: one at 50%, one at 150%.
+        // Two flat strokes: one at 25%, one at 75%.
         voice.lane_left.strokes = vec![
-            line_stroke((0.0, 50.0), (4.0, 50.0)).unwrap(),
-            line_stroke((0.0, 150.0), (4.0, 150.0)).unwrap(),
+            line_stroke((0.0, 25.0), (4.0, 25.0)).unwrap(),
+            line_stroke((0.0, 75.0), (4.0, 75.0)).unwrap(),
         ];
-        let on_low = v.point_to_screen(Point::new(2.0, 50.0));
+        let on_low = v.point_to_screen(Point::new(2.0, 25.0));
         assert_eq!(
             pick_stroke(&voice.lane_left.strokes, &v, on_low, 6.0),
             Some(0)
         );
-        // 100% is between the two strokes: nothing is picked there.
-        let between = v.point_to_screen(Point::new(2.0, 100.0));
+        // 50% is between the two strokes: nothing is picked there.
+        let between = v.point_to_screen(Point::new(2.0, 50.0));
         assert_eq!(
             pick_stroke(&voice.lane_left.strokes, &v, between, 6.0),
             None

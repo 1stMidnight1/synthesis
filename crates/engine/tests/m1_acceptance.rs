@@ -282,7 +282,7 @@ fn left_and_right_gains_differ_as_set() {
     );
 }
 
-/// Test M2-3: overlapping lane strokes add, and the sum is clamped to 200%.
+/// Test M2-3: overlapping lane strokes add, and the sum is clamped to 100%.
 #[test]
 fn overlapping_lane_strokes_add_and_clamp() {
     let shape = Shape::outline(Geometry::Line {
@@ -294,15 +294,15 @@ fn overlapping_lane_strokes_add_and_clamp() {
     let base = scene_with(1.0, shape.clone());
     let mut single = base.clone();
     single.voices[0].lane_left = Lane {
-        strokes: vec![mk(100.0)],
+        strokes: vec![mk(50.0)],
     };
     let mut double = base.clone();
     double.voices[0].lane_left = Lane {
-        strokes: vec![mk(100.0), mk(100.0)],
+        strokes: vec![mk(50.0), mk(50.0)],
     };
     let mut capped = base.clone();
     capped.voices[0].lane_left = Lane {
-        strokes: vec![mk(150.0), mk(150.0)],
+        strokes: vec![mk(75.0), mk(75.0)],
     };
 
     let rms = |s: &Scene| {
@@ -313,9 +313,9 @@ fn overlapping_lane_strokes_add_and_clamp() {
     let r1 = rms(&single);
     let r2 = rms(&double);
     let rc = rms(&capped);
-    // Two 100% strokes add to 200%: twice the amplitude.
+    // Two 50% strokes add to 100%: twice the amplitude.
     assert!((r2 / r1 - 2.0).abs() < 0.01, "sum ratio {}", r2 / r1);
-    // 300% clamps to 200%: same as double.
+    // 150% clamps to 100%: same as double.
     assert!((rc / r2 - 1.0).abs() < 0.01, "clamp ratio {}", rc / r2);
 }
 
