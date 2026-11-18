@@ -268,6 +268,33 @@ Four variants are selectable per voice ("Curve sound" in the sketch panel), so t
 
 **Curve sound control.** The panel control was a combo box with its label to the side, which made the row wider than the panel and rendered as a tall box. The label is now on its own line, the box fills the panel width, and it shows a short name ("Long fades"). It stays named for accessibility through `labelled_by`.
 
+## M2.5 engine performance (2026-11-18)
+
+Profiled before changing anything. A 5-octave fill spent nearly all its time in `VoiceSynth::process`, mostly in `sin` (libm), and the lattice inner loop was the cost. Changes, in order of effect:
+
+1. **Active lattice ranges.** Only oscillators that can be audible are visited. Stored as ascending contiguous ranges, not an index list (the index list cost about 3x in the inner loop).
+2. **Settled ranges.** A range whose gains and targets are all 1 skips the ramp test each sample, and its flag is kept up to date once per control frame.
+3. **Fast sine.** `osc::fast_sin`, a degree-15 odd polynomial with symmetry reduction, error below 1e-11 (about -220 dBFS), roughly 3x faster than libm.
+4. **Cached edges, scratch buffers.** Shape edges are flattened once per voice; control-frame gating reuses buffers and no longer allocates per frame.
+5. **Voices in parallel.** Each voice renders on its own thread for blocks of at least 8192 frames; voice buffers are summed in voice order, so the result does not depend on threading (checked: identical on repeated runs).
+
+**Output contract changed, on purpose.** The fast sine and the reordered per-voice sum change the last bit of some float samples. The golden test (`perf_golden.rs`) now checks the largest difference against the reference is at most one 24-bit quantisation step (2^-23, about -138.5 dBFS). Measured difference: 1.19e-7, one LSB. The export quantises to 24 bits, so this does not change the exported file. Earlier wording that said output was bit-identical is superseded by this.
+
+**Speed (Apple M3, release, 10 s of audio, best of 3):**
+
+| Scene | Before | After |
+|---|---|---|
+| One line | 8.1x | 538x |
+| Filled 1 octave | 4.6x | 32.6x |
+| Filled 5 octaves | 1.5x | 7.0x |
+| Filled circle, 3 octaves | 2.7x | 10.7x |
+| 4 voices, 5-octave fill | 0.4x | 5.7x |
+| 8 voices, one line | 1.0x | 229x |
+
+**Accept criteria (from the plan):** a single line at 50x or better (met); a 5-octave fill at 4x or better (met, 7.0x).
+
+**Not yet done.** Live playback has a per-block cost too, which the offline benchmark does not measure; the parallel path only engages for blocks of 8192 frames or more, so live blocks (1024) run on one thread. Whether that is fast enough for 4+ voices of wide fills on a live stream is untested and should be checked in the app.
+
 ## Proposed
 
 _None yet._

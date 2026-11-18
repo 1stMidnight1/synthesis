@@ -30,6 +30,10 @@ impl Rendered {
     }
 }
 
+/// Blocks shorter than this render voices on the calling thread: spawning
+/// threads costs more than it saves on a short live-playback block.
+pub const PARALLEL_MIN_FRAMES: usize = 8_192;
+
 /// Stateful renderer that produces consecutive stereo blocks of a scene.
 pub struct SceneRenderer {
     sample_rate: u32,
@@ -119,17 +123,54 @@ impl SceneRenderer {
     }
 
     /// Render the next `len` frames, continuing from where the last call stopped.
+    ///
+    /// Each voice is rendered into its own buffer, on its own thread when
+    /// there is more than one voice and the block is long enough to be worth
+    /// it. The voice buffers are then summed in voice order, which is the same
+    /// floating-point order as rendering them one after another, so the result
+    /// does not depend on threading (R7).
     pub fn next_block(&mut self, len: usize) -> Rendered {
         let sr = f64::from(self.sample_rate);
-        let mut left = vec![0.0f64; len];
-        let mut right = vec![0.0f64; len];
-        for (voice, synth) in self.voices.iter().zip(self.synths.iter_mut()) {
-            for (k, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
-                let n = self.next_index + k;
+        let start = self.next_index;
+        let render_voice = |voice: &Voice, synth: &mut VoiceSynth| {
+            let mut l = vec![0.0f64; len];
+            let mut r = vec![0.0f64; len];
+            for k in 0..len {
+                let n = start + k;
                 let s = synth.process(n);
                 let t = n as f64 / sr;
-                *l += s * voice.lane_left.gain_at(t);
-                *r += s * voice.lane_right.gain_at(t);
+                l[k] = s * voice.lane_left.gain_at(t);
+                r[k] = s * voice.lane_right.gain_at(t);
+            }
+            (l, r)
+        };
+        let parts: Vec<(Vec<f64>, Vec<f64>)> =
+            if self.synths.len() > 1 && len >= PARALLEL_MIN_FRAMES {
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = self
+                        .voices
+                        .iter()
+                        .zip(self.synths.iter_mut())
+                        .map(|(voice, synth)| scope.spawn(move || render_voice(voice, synth)))
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| h.join().expect("voice render thread panicked"))
+                        .collect()
+                })
+            } else {
+                self.voices
+                    .iter()
+                    .zip(self.synths.iter_mut())
+                    .map(|(voice, synth)| render_voice(voice, synth))
+                    .collect()
+            };
+        let mut left = vec![0.0f64; len];
+        let mut right = vec![0.0f64; len];
+        for (l, r) in &parts {
+            for k in 0..len {
+                left[k] += l[k];
+                right[k] += r[k];
             }
         }
         self.next_index += len;
