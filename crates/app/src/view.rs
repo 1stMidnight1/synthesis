@@ -98,10 +98,12 @@ impl View {
     }
 }
 
+/// Timeline start (t = 0) is the left edge of the view, always. The view never
+/// shows time before the timeline: that area would be blank, with no labels.
+/// The view may be narrower than the whole timeline, and may end past it.
 fn clamp_time(time: &mut TimeView) {
     time.width_s = time.width_s.clamp(MIN_WIDTH_S, MAX_WIDTH_S);
-    // Keep t = 0 reachable, but don't let the view drift far before it.
-    time.start_s = time.start_s.max(-0.5 * time.width_s);
+    time.start_s = time.start_s.max(0.0);
 }
 
 fn clamp_pitch(pitch: &mut PitchView) {
@@ -179,10 +181,10 @@ pub fn zoom_at(time: &mut TimeView, pitch: &mut PitchView, rect: Rect, at: Pos2,
 
 /// Fit the view to a time range and pitch range (semitones), with a margin.
 pub fn fit(time: &mut TimeView, pitch: &mut PitchView, t: (f64, f64), st: (f64, f64), a4: f64) {
-    let (t0, t1) = (t.0.min(t.1), t.0.max(t.1));
+    let (t0, t1) = (t.0.min(t.1).max(0.0), t.0.max(t.1).max(0.0));
     let w = (t1 - t0).max(0.5);
     time.width_s = w * 1.15;
-    time.start_s = t0 - w * 0.075;
+    time.start_s = (t0 - w * 0.075).max(0.0);
     let (s0, s1) = (st.0.min(st.1), st.0.max(st.1));
     let pad = ((s1 - s0) * 0.15).max(2.0);
     pitch.lo_hz = st_to_hz(s0 - pad, a4);
@@ -275,6 +277,32 @@ mod tests {
         }
     }
 
+    /// Regression: the view never shows negative time, however it is zoomed or
+    /// panned, so the area before t = 0 can't appear as a blank bar.
+    #[test]
+    fn view_never_shows_time_before_zero() {
+        let mut v = view(PitchScale::Semitones);
+        v.time.start_s = 0.5;
+        pan(&mut v.time, &mut v.pitch, v.rect, Vec2::new(-5000.0, 0.0));
+        assert!(
+            v.time.start_s >= 0.0,
+            "panned back before 0: {}",
+            v.time.start_s
+        );
+        // Zoom out at the left edge: the anchor stays at t >= 0.
+        zoom_at(
+            &mut v.time,
+            &mut v.pitch,
+            v.rect,
+            v.rect.left_center(),
+            0.2,
+            1.0,
+        );
+        assert!(v.time.start_s >= 0.0, "zoomed past 0: {}", v.time.start_s);
+        let t_left = v.screen_to_point(v.rect.left_center()).t;
+        assert!(t_left >= -1e-9, "left edge shows {t_left}");
+    }
+
     #[test]
     fn zoom_and_pan_are_clamped() {
         let mut v = view(PitchScale::Semitones);
@@ -292,6 +320,6 @@ mod tests {
         assert!(v.time.width_s <= MAX_WIDTH_S);
         assert!(v.pitch.lo_hz >= MIN_HZ - 1e-9 && v.pitch.hi_hz <= MAX_HZ + 1e-6);
         pan(&mut v.time, &mut v.pitch, v.rect, Vec2::new(1e6, 0.0));
-        assert!(v.time.start_s >= -0.5 * v.time.width_s - 1e-9);
+        assert!(v.time.start_s >= 0.0);
     }
 }

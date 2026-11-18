@@ -14,7 +14,11 @@ use std::f64::consts::TAU;
 use crate::error::{EngineError, Result};
 
 /// Polyline segments used to approximate a full curve turn.
-pub const CURVE_SEGMENTS_PER_TURN: usize = 256;
+/// 64 segments: each edge is audible for about 31 ms and changes pitch by at
+/// most about 0.6 semitones, so a curve sounds as a smooth outline of steady
+/// pitches. 256 segments (the M1 value) gave 8 ms edges that were too short to
+/// hold a pitch, and the 2 ms gate ramps then dominated, which sounded grainy.
+pub const CURVE_SEGMENTS_PER_TURN: usize = 64;
 
 /// A point in (time seconds, fractional MIDI semitone) space.
 #[derive(Debug, Clone, Copy, PartialEq)]

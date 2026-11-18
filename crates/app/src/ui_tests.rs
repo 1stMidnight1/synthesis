@@ -921,3 +921,124 @@ fn screenshots() {
     }
     save(&mut u, "04_box_select");
 }
+
+/// Regression (reported): scrolling or zooming past time 0 must not reveal a
+/// blank strip before the timeline, and the ruler keeps its labels.
+#[test]
+fn wheel_past_time_zero_keeps_timeline_at_the_edge() {
+    let mut u = Ui::new();
+    let at = u.screen(0.2, 66.0);
+    u.move_to(at);
+    // Zoom out hard at the left edge, then pan left.
+    for _ in 0..12 {
+        u.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: Vec2::new(0.0, -3.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    u.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: Vec2::new(400.0, 0.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Trackpad,
+        modifiers: Modifiers::NONE,
+    });
+    u.h.run_steps(20);
+    let app = u.h.state();
+    assert!(
+        app.doc.time.start_s >= 0.0,
+        "view starts before t=0: {}",
+        app.doc.time.start_s
+    );
+    let left = u.view().screen_to_point(u.view().rect.left_center());
+    assert!(left.t >= -1e-9, "left edge shows t={}", left.t);
+}
+
+/// Typed X division: `1/4` at 120 BPM is a quarter of a beat (0.125 s), so a
+/// click snaps to the nearest 0.125 s, and the typed value is what snaps.
+#[test]
+fn typed_x_division_sets_the_snap_grid() {
+    let mut u = Ui::new();
+    u.app().canvas.x_div = synthesis_engine::Division::new(4).unwrap();
+    u.app().canvas.bpm = 120.0;
+    u.tool(Tool::Line);
+    let a = u.screen(0.6, 60.0); // nearest 0.125 s step is 0.625 s
+    let b = u.screen(1.3, 60.0); // nearest is 1.25 s
+    u.click(a);
+    u.click(b);
+    u.key(egui::Key::Escape);
+    let Geometry::Line { a, b } = u.shapes()[0].geometry else {
+        panic!()
+    };
+    assert!(
+        (a.t - 0.625).abs() < 1e-6,
+        "start snapped to 0.625 s, got {}",
+        a.t
+    );
+    assert!(
+        (b.t - 1.25).abs() < 1e-6,
+        "end snapped to 1.25 s, got {}",
+        b.t
+    );
+}
+
+/// Typed Y division: pitch snap follows the typed step when the step is wide
+/// enough to see. Zoomed in to a few semitones, `1/1` snaps to whole semitones.
+#[test]
+fn typed_y_division_sets_the_pitch_snap() {
+    let mut u = Ui::new();
+    u.app().canvas.snap = true;
+    u.app().doc.pitch.lo_hz = 440.0 * ((60.0 - 69.0 - 6.0) / 12.0_f64).exp2();
+    u.app().doc.pitch.hi_hz = 440.0 * ((60.0 - 69.0 + 6.0) / 12.0_f64).exp2();
+    u.app().canvas.y_div = synthesis_engine::Division::new(1).unwrap();
+    u.tool(Tool::Line);
+    let a = u.screen(0.5, 60.3);
+    let b = u.screen(1.5, 60.7);
+    u.click(a);
+    u.click(b);
+    u.key(egui::Key::Escape);
+    let Geometry::Line { a, b } = u.shapes()[0].geometry else {
+        panic!()
+    };
+    assert!((a.st - 60.0).abs() < 1e-6, "start pitch {}", a.st);
+    assert!((b.st - 61.0).abs() < 1e-6, "end pitch {}", b.st);
+}
+
+/// An invalid typed division is rejected and the old value is kept.
+#[test]
+fn invalid_division_text_is_ignored() {
+    use synthesis_engine::Division;
+    assert_eq!(Division::parse("1/0"), None);
+    assert_eq!(Division::parse("nonsense"), None);
+    let mut u = Ui::new();
+    let before = u.app().canvas.x_div;
+    assert_eq!(before, Division::new(16).unwrap());
+    assert_eq!(Division::parse("1/999"), None, "out of range keeps 1/16");
+}
+
+/// Master gain: the slider sets the scene's master gain as one undoable step,
+/// and undo restores the value from before the change.
+#[test]
+fn master_gain_is_one_undoable_step() {
+    let mut u = Ui::new();
+    assert!((u.app().doc.scene.settings.master_gain - 0.7).abs() < 1e-9);
+    u.app().set_master_gain(0.4);
+    assert!((u.app().doc.scene.settings.master_gain - 0.4).abs() < 1e-9);
+    assert!(u.app().doc.history.can_undo());
+    u.app().undo();
+    assert!(
+        (u.app().doc.scene.settings.master_gain - 0.7).abs() < 1e-9,
+        "undo restores 70%"
+    );
+}
+
+/// Setting the same value again is not recorded as an edit.
+#[test]
+fn master_gain_same_value_is_not_an_edit() {
+    let mut u = Ui::new();
+    u.app().set_master_gain(0.7);
+    assert!(!u.app().doc.history.can_undo());
+}

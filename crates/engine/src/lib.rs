@@ -10,9 +10,11 @@
 //! - `sketch`: sketch-tool construction and handle editing (CANVAS-02, CANVAS-07).
 //! - `export`: WAV export at 16-bit, 24-bit, or 32-bit float (OUT-03).
 
+pub mod branch;
 pub mod error;
 pub mod export;
 pub mod geometry;
+pub mod grid;
 pub mod lanes;
 pub mod micro;
 pub mod model;
@@ -26,9 +28,11 @@ pub mod synth;
 pub mod transform;
 pub mod transport;
 
+pub use branch::CurveSound;
 pub use error::{EngineError, Result};
 pub use export::{BitDepth, write_wav, write_wav_file};
 pub use geometry::{Geometry, Point, Segment, Shape};
+pub use grid::Division;
 pub use lanes::{Lane, LanePoint, Stroke};
 pub use micro::{DepthUnit, Micro, Preset};
 pub use model::{PhasePolicy, Scene, Settings, Voice};

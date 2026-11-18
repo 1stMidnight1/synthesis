@@ -4,7 +4,7 @@
 //! runs headless under the UI test harness.
 
 use eframe::egui;
-use synthesis_engine::{BitDepth, LoopRegion, PitchScale, Scene, Subdivision, Tempo};
+use synthesis_engine::{BitDepth, CurveSound, Division, LoopRegion, PitchScale, Scene, Tempo};
 
 use crate::audio::AudioOut;
 use crate::canvas::{self, CanvasState, Tool};
@@ -179,7 +179,84 @@ impl SynthesisApp {
         };
     }
 
-    fn undo(&mut self) {
+    /// Write one WAV per curve variant of the current voice, into a folder the
+    /// user picks, so each can be auditioned outside the app.
+    fn export_curve_variants(&mut self) {
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        let mut written = 0;
+        for mode in CurveSound::ALL {
+            let mut scene = self.doc.scene.clone();
+            let voice = self.doc.selected_voice;
+            scene.voices[voice].curve_sound = mode;
+            let name = match mode {
+                CurveSound::Literal => "curve_literal.wav",
+                CurveSound::LongFade => "curve_long_fade.wav",
+                CurveSound::UpperOnly => "curve_upper_only.wav",
+                CurveSound::LowerOnly => "curve_lower_only.wav",
+            };
+            match export(&scene, &dir.join(name)) {
+                Ok(()) => written += 1,
+                Err(e) => {
+                    self.export_status = format!("Export failed: {e}");
+                    return;
+                }
+            }
+        }
+        self.export_status = format!("Wrote {written} curve variants to {}", dir.display());
+    }
+
+    /// Master output gain, 0 to 100% (OUT-01). Shared by live playback and
+    /// export, since both render from the scene's settings. A drag is one
+    /// undo step: the value is committed when the slider is released.
+    fn master_gain_control(&mut self, ui: &mut egui::Ui) {
+        let mut percent = self.doc.scene.settings.master_gain * 100.0;
+        ui.label("Master");
+        let resp = ui.add(
+            egui::Slider::new(&mut percent, 0.0..=100.0)
+                .suffix(" %")
+                .fixed_decimals(0)
+                .clamping(egui::SliderClamping::Always),
+        );
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Slider, true, "Master gain"));
+        let new = percent / 100.0;
+        if (new - self.doc.scene.settings.master_gain).abs() > 1e-9 && !resp.dragged() {
+            self.set_master_gain(new);
+        } else if resp.dragged() {
+            // Live preview during the drag without an undo step per frame.
+            self.doc.scene.settings.master_gain = new;
+            self.sync_playback_now();
+        }
+        if resp.drag_stopped() {
+            self.set_master_gain(new);
+        }
+    }
+
+    pub(crate) fn set_master_gain(&mut self, gain: f64) {
+        let before = self.doc.scene.settings.master_gain;
+        if (gain - before).abs() < 1e-9 {
+            return;
+        }
+        // Undo must restore the value from before the drag, not the live preview.
+        self.doc.scene.settings.master_gain = before;
+        self.doc.edit(|s| s.settings.master_gain = gain);
+        self.sync_playback_now();
+    }
+
+    /// Send the current scene to live playback immediately (used by master gain).
+    fn sync_playback_now(&mut self) {
+        if self.playing
+            && let Some(render) = &self.render
+        {
+            render.send(Command::Update {
+                scene: Box::new(self.doc.scene.clone()),
+            });
+            self.sent_scene = Some(self.doc.scene.clone());
+        }
+    }
+
+    pub(crate) fn undo(&mut self) {
         if self.doc.undo() {
             self.canvas.selected.clear();
             self.canvas.status = "Undone".into();
@@ -240,6 +317,8 @@ impl SynthesisApp {
                 self.redo();
             }
             ui.separator();
+            self.master_gain_control(ui);
+            ui.separator();
             if ui.button("Export WAV...").clicked() {
                 self.export_wav();
             }
@@ -276,21 +355,28 @@ impl SynthesisApp {
         });
         ui.separator();
         ui.checkbox(&mut self.canvas.snap, "Snap to grid");
-        egui::ComboBox::from_label("Grid")
-            .selected_text(sub_label(self.canvas.subdivision))
+        ui.label("Grid divisions");
+        typed_division(ui, "X (time, per beat)", &mut self.canvas.x_div);
+        typed_division(ui, "Y (pitch, per step)", &mut self.canvas.y_div);
+        ui.checkbox(&mut self.canvas.show_grid, "Show grid");
+        ui.separator();
+        let current = self.doc.scene.voices[self.doc.selected_voice].curve_sound;
+        egui::ComboBox::from_label("Curve sound")
+            .selected_text(current.label())
+            .width(150.0)
             .show_ui(ui, |ui| {
-                for sub in [
-                    Subdivision::Bar,
-                    Subdivision::Beat,
-                    Subdivision::Eighth,
-                    Subdivision::Sixteenth,
-                    Subdivision::ThirtySecond,
-                    Subdivision::Seconds,
-                ] {
-                    ui.selectable_value(&mut self.canvas.subdivision, sub, sub_label(sub));
+                for mode in CurveSound::ALL {
+                    if ui.selectable_label(current == mode, mode.label()).clicked()
+                        && mode != current
+                    {
+                        let voice = self.doc.selected_voice;
+                        self.doc.edit(|s| s.voices[voice].curve_sound = mode);
+                    }
                 }
             });
-        ui.checkbox(&mut self.canvas.show_grid, "Show grid");
+        if ui.button("Export curve variants...").clicked() {
+            self.export_curve_variants();
+        }
         ui.separator();
         ui.label("Pitch axis");
         for (scale, name) in [
@@ -466,15 +552,35 @@ impl eframe::App for SynthesisApp {
     }
 }
 
-fn sub_label(s: Subdivision) -> &'static str {
-    match s {
-        Subdivision::Bar => "Bar",
-        Subdivision::Beat => "Beat",
-        Subdivision::Eighth => "1/8",
-        Subdivision::Sixteenth => "1/16",
-        Subdivision::ThirtySecond => "1/32",
-        Subdivision::Seconds => "1 s",
-    }
+/// A `1/N` field: type N (or `1/N`) and press Enter or leave the field.
+/// While the field has focus the typed text is kept in egui's temporary
+/// storage. On commit, valid text sets the division and invalid text is
+/// dropped, so the field shows the last valid value again.
+fn typed_division(ui: &mut egui::Ui, label: &str, div: &mut Division) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).small());
+        ui.monospace("1/");
+        let id = ui.make_persistent_id(label);
+        let typed: Option<String> = ui.data(|d| d.get_temp(id));
+        let mut text = typed.unwrap_or_else(|| div.denom.to_string());
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .id(id)
+                .desired_width(56.0)
+                .hint_text("N"),
+        );
+        // Name the field for assistive technology, as the visible label does.
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, label));
+        let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if resp.lost_focus() || enter {
+            if let Some(d) = Division::parse(&text) {
+                *div = d;
+            }
+            ui.data_mut(|d| d.remove::<String>(id));
+        } else if resp.has_focus() {
+            ui.data_mut(|d| d.insert_temp(id, text));
+        }
+    });
 }
 
 fn export(scene: &Scene, path: &std::path::Path) -> Result<(), String> {

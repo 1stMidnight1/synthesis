@@ -179,6 +179,81 @@ Goal: sketch tools that behave like Onshape's. Decisions taken without a user an
 - `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
 - Release build starts and stays up 6 s with no stderr.
 
+## M3 polish (2026-11-17)
+
+Reported after the M3 merge: curves sound strange, zooming past t = 0 shows a black strip and hides labels, labels are small and sparse, and the grid needs typed X and Y divisions.
+
+- **Curves (CANVAS/R1).** Measured, not guessed. A circle's outline is 256 straight edges, each lasting about 8 ms, shorter than the 2 ms gate ramps at each end, so the outline sounded like a chatter of short glides. `CURVE_SEGMENTS_PER_TURN` is now 64: each edge lasts about 31 ms and changes pitch by at most 0.6 semitones. Measured spectrum and duration are in the commit notes; `circle_outline_has_steady_edges` guards the result. This keeps R1 (each crossing is one frequency). A user choice was asked (coarse tones, band, or tune by ear); the chosen option was "coarse tones".
+- **Time never negative.** The view's left edge is t = 0 and `clamp_time` enforces it, so no area before the timeline can appear. The grey strip that drew for t < 0 is removed. Regression tests cover pan, zoom, and wheel.
+- **Typed grid divisions.** `Division` (engine, `grid.rs`) is `1/N`, 1 to 256. X is a `1/N` of a beat (`1/16` is a sixteenth). Y is a `1/N` of a semitone in Semitones mode, and of an octave in the Hz modes, which is the same grid on a log axis. Two text fields replace the subdivision dropdown; invalid text is ignored and the last valid value is kept.
+- **Pitch snap** follows the Y division (previously it always rounded to whole semitones). It is skipped when the step is under 4 screen points, so it never jumps across a pixel.
+- **Labels.** Ruler labels every beat (seconds) when there is room and every bar (bar number and seconds) at a readable spacing, with a background. Pitch labels are 12 px with a background, at every step that has room. Note names in Semitones mode, Hz in Hz modes.
+- **Accessibility.** The two division fields have accessible names. The accessibility check is not disabled.
+
+**Testing.** Engine: `grid` unit tests (parse, bounds, steps), `circle_outline_has_steady_edges`. App: `view_never_shows_time_before_zero`, snap tests for X and Y division, UI tests for the wheel past zero, typed X and Y divisions, and invalid text. 46 app tests, 79 engine unit, 11 engine acceptance.
+
+**Not verified.** How the curves sound is still a measurement, not a listening test. The label readability is judged from screenshots. The curve sound needs your ear.
+
+## M3 polish test results (2026-11-17, macOS arm64)
+
+- `cargo fmt --all -- --check`, `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`: pass.
+- `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass.
+- Release build starts and stays up 6 s with no stderr.
+
+## M3 polish: curve sound variants (2026-11-17)
+
+Curves no longer sample into straight edges; a circle, ellipse, or arc is split at its time extremes into branches, each a single-valued function of time, with one continuous oscillator per branch (`branch.rs`). Arc pitch error against the analytic curve fell from 11.0 to 6.3 cents median.
+
+Four variants are selectable per voice ("Curve sound" in the sketch panel), so the choice is made by ear:
+
+- **Literal (default):** both branches together, 2 ms fades. R1 as written.
+- **Both, long fades:** both branches, 15 ms fades at the turn points.
+- **Upper only:** the upper branch alone.
+- **Lower only:** the lower branch alone.
+
+"Export curve variants..." writes all four as WAVs into a folder. Listening files for a circle and an arc are in `~/Desktop/synthesis_curve_listening/`, written by `crates/engine/tests/write_listening.rs` (`SYNTHESIS_LISTEN=<dir>`).
+
+**Known caveat for the listening test.** Both-branch variants sum two tones and reach full scale (peak 1.000 in the export); single-branch variants peak at the 0.7 master gain. They are about 3 dB apart, so compare them at matched level. Loudness is not normalised per variant; that is a decision for you.
+
+**Why "Literal" and "Both, long fades" sound the same (measured).** They are not bit-identical overall, but they differ only at the two turn points, the start and end of the circle. Over the middle of the circle (0.5 s to 0.75 s) the two renders are bit-identical. The differing region is about 30 ms of a 1.5 s render, about 0.8% of the energy, so a 15 ms versus 2 ms fade is a subtle change to the attack and release, not to the sustained sound. Judge the curve sound on the sustained middle, or use a longer fade to make the variant audible. An earlier draft of this diagnosis blamed phase advance; a measurement showed that was wrong and it was reverted.
+
+**Why the middle of a circle is chattery and the ends are smooth (measured).** At the middle of a circle the two branches are an octave apart (311 Hz and 622 Hz at t = 0.5 s); the ratio falls to about 1.2 near the ends, where the branches meet. A spectrum window at 0.3 s to 0.6 s shows both families of partials at once (312 to 318 Hz and 606 to 621 Hz). Upper-only removes the lower family. Near the turn points the two pitches are close, so they blend into one sound, which is the smooth part you hear. An arc's tail has only one branch, which is why the end of an arc sounds smooth too.
+
+**A single-branch arc is measurably smooth.** An upper half-ellipse (one branch) has one spectral peak in its middle, at 622.6 Hz against 622.3 Hz expected, and its cycle-to-cycle pitch jitter is 0.002 Hz median, 0.03 Hz at the 95th percentile. The only large jitter is 1.4 Hz at the first cycle (t = 0.50 s), where the onset settles. Peak-count analysis in 10 ms windows is not a valid roughness measure for a fast glide: the window smears a clean sweep over several bins. The two-pitch explanation does not account for the garbling of single-branch arcs. Open question, to be settled by listening: where in the arc it is heard (onset, middle, or end).
+
+**Why a lens of two arcs can sound fine when a circle does not (measured, not heard).** A lens (two arcs sharing both ends) also sounds two pitches at once at its middle, with the same loudness ripple as the circle (1.03 vs 1.04). Its interval is 15 semitones, not the circle's 12. Counting coincident partials (first 12 harmonics, within 20 cents), the circle's octave has 6 shared partials and the lens's 15 semitones has 1. Shared partials make two tones fuse into one harmonic sound; few shared partials keep them as two voices. This is an objective proxy for consonance. Whether it matches what is heard, and whether layered arcs read as separate voices, is not yet verified by ear.
+
+**The curve WAVs were clipping, not the curve treatment (measured).** Live playback and export are bit-identical (max sample difference 0.000000000), so the synth and the render path agree. The problem is the final stage: the circle-plus-arc scene, at master gain 0.7, peaks at 1.40 with 14,639 of 168,000 samples (8.7%) above full scale. The 24-bit WAV clamps those flat at +/-1.0, which adds harmonic distortion and a gritty, buzzy character. Neither the render nor the playback path limits or normalises, so the live app clips the same way. The fix belongs in the output stage: a limiter or a choice of master level. Not yet changed; it is a mix decision.
+
+**Measured, not yet heard.** The two branches of a circle (about 311 Hz and 622 Hz at the middle time, an octave apart) sum to a waveform that is not a steady tone. I have not verified by ear whether that sounds rough. The earlier "beating" explanation was wrong: a 2:1 pair gives a periodic waveform, not a slow beat. The variants exist so the difference can be heard directly.
+
+## M3 polish: curve variants test results (2026-11-17, macOS arm64)
+
+- `cargo fmt --all -- --check`, `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`: pass. Tests: 46 app, 86 engine unit, 13 engine acceptance.
+- New tests: branch geometry (single-valued, on the curve, analytic rate matches finite differences, arc split), `CurveSound` selection, variant branch selection (upper-only and lower-only are each at least 20x weaker on the silent pitch), variants export as distinct WAVs.
+- `cargo check` for `synthesis-engine` and `synthesis-app` on `x86_64-pc-windows-msvc`: pass. Release build: pass.
+
+## M3 polish: master gain and the arc pop (2026-11-17)
+
+- **Master gain (OUT-01), adjustable.** A 0 to 100% slider is in the transport bar, next to Export. It writes the scene's master gain as one undoable step (committed on release), and it is shared by live playback and export, since both render from the scene settings. Default stays 70%. A test confirms that a 30% master keeps the circle-plus-arc scene inside full scale while 70% clips it, and that the level scales exactly linearly.
+- **Arc start and end clicks (measured; causal link pending listening).** The reported click is at each arc's start and end. Earlier "no step" checks looked for a sample-level jump, which is the wrong test. Measured: at the arc's end the sound is at full level up to the cut and then ramps to zero over the 2 ms fade (envelope 1.00, 0.87, 0.49, 0.00). With the 15 ms fade it ramps over about 15 ms (1.00, 0.94, 0.92, 0.86 ... 0.00). At the start, the 2 ms fade reaches full level in 2 to 3 ms and the 15 ms fade in about 15 ms. A 2 ms fade is a fast edge; at each arc end the pitch is sweeping at its fastest, so this is the most likely click. The earlier statement that the long fade had no effect at the end was wrong: it does change the end envelope. Confirmation requires listening to `arc_ends_literal.wav` and `arc_ends_long_fade.wav` (written to the Desktop folder).
+- **In-app vs export (measured).** Live playback through the real ring and player, paced at 48 kHz, is bit-identical to the export (max sample difference 0.000000), and the step at each arc start and end matches. One underrun in 1,312 chunks at startup. The device is the built-in speaker: 48 kHz, stereo, float, buffer range 15 to 4096 frames, default chosen by the OS. So the app and the file produce the same samples; any difference heard in the app comes after the samples leave the app (device processing, a speaker's low-frequency response, or the output chain). Not verified by ear; depends on the output device.
+- **The earlier pop search (superseded).** Measured, not guessed: (1) offline, an arc's onset is a smooth 2 ms ramp (first sample 0.0007, largest 5 ms step 0.034); (2) an arc's end fades to exactly zero with a final step of 0.003; (3) through the live player, a sound ringing at the timeline end is cut with a step of 0.0000. So no discontinuity was found at the start or end. A lower master makes any pop quieter but does not remove a real discontinuity. The pop is open: it may come from something the offline render does not capture, or from the audio device. Needs the listener to say when it happens (press, release, loop wrap, or each arc).
+
+**Test results (2026-11-17, macOS arm64).** `cargo test --workspace`: 48 app, 86 engine unit, 14 engine acceptance, 1 render. `cargo clippy --workspace --all-targets -- -D warnings`: pass. Windows type-checks for engine and app: pass. Release build: pass.
+
+## M3 polish: arc-end pops fixed by a longer fade (2026-11-17)
+
+**Confirmed by ear on headphones.** The 2 ms fade on curve branches produces an audible pop at each arc's start and end. The 15 ms fade removes it. Earlier measurements had pointed here, but only a listening test could confirm it, and the in-app and export paths produce identical samples, so the pop is a property of the signal's fade, heard most clearly on headphones and at low frequency.
+
+**Change.** The default `CurveSound` is now `LongFade` (15 ms fades at the turn points). The 2 ms variant is kept as "Both, short fades (2 ms)" for comparison. Regression test `default_curve_sound_has_soft_arc_ends`: the 2 ms fade is over by 3 ms, the 15 ms fade is still ringing at 3 and 10 ms.
+
+**Measurement note.** A first version of the regression test read the wrong 1 ms block and failed. The check was on my side: it measured the block at the fade's tail instead of the block after it. Corrected to whole 1 ms blocks.
+
+**Still open.** The 15 ms default is a fix for the pop, not a tuned sound. The fade length could be shorter (for example 5 to 10 ms) if the start still reads as a pop-free attack too slow; that is a listening choice. Also, the built-in speaker may colour low frequencies, so a fade that is clean on headphones may still sound different there.
+
+**Test results.** `cargo test --workspace`: 48 app, 86 engine unit, 15 engine acceptance, 2 others. `cargo clippy --workspace --all-targets -- -D warnings`: pass. Windows type-checks: pass. Release build: pass.
+
 ## Proposed
 
 _None yet._

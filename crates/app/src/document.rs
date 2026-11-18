@@ -82,7 +82,7 @@ pub struct TimeView {
 impl Default for TimeView {
     fn default() -> Self {
         Self {
-            start_s: -0.2,
+            start_s: 0.0,
             width_s: 4.4,
         }
     }
