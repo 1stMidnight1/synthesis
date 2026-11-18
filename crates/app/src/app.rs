@@ -4,7 +4,7 @@
 //! runs headless under the UI test harness.
 
 use eframe::egui;
-use synthesis_engine::{BitDepth, CurveSound, Division, LoopRegion, PitchScale, Scene, Tempo};
+use synthesis_engine::{BitDepth, Division, LoopRegion, PitchScale, Scene, Tempo};
 
 use crate::audio::AudioOut;
 use crate::canvas::{self, CanvasState, Tool};
@@ -179,34 +179,6 @@ impl SynthesisApp {
         };
     }
 
-    /// Write one WAV per curve variant of the current voice, into a folder the
-    /// user picks, so each can be auditioned outside the app.
-    fn export_curve_variants(&mut self) {
-        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
-            return;
-        };
-        let mut written = 0;
-        for mode in CurveSound::ALL {
-            let mut scene = self.doc.scene.clone();
-            let voice = self.doc.selected_voice;
-            scene.voices[voice].curve_sound = mode;
-            let name = match mode {
-                CurveSound::Literal => "curve_literal.wav",
-                CurveSound::LongFade => "curve_long_fade.wav",
-                CurveSound::UpperOnly => "curve_upper_only.wav",
-                CurveSound::LowerOnly => "curve_lower_only.wav",
-            };
-            match export(&scene, &dir.join(name)) {
-                Ok(()) => written += 1,
-                Err(e) => {
-                    self.export_status = format!("Export failed: {e}");
-                    return;
-                }
-            }
-        }
-        self.export_status = format!("Wrote {written} curve variants to {}", dir.display());
-    }
-
     /// Master output gain, 0 to 100% (OUT-01). Shared by live playback and
     /// export, since both render from the scene's settings. A drag is one
     /// undo step: the value is committed when the slider is released.
@@ -347,41 +319,11 @@ impl SynthesisApp {
             );
         }
         ui.separator();
-        ui.checkbox(&mut self.canvas.fill_new, "New shapes filled");
-        ui.add_enabled_ui(!self.canvas.selected.is_empty(), |ui| {
-            if ui.button("Toggle fill (F)").clicked() {
-                canvas::toggle_fill_selected(&mut self.doc, &mut self.canvas);
-            }
-        });
-        ui.separator();
         ui.checkbox(&mut self.canvas.snap, "Snap to grid");
         ui.label("Grid divisions");
         typed_division(ui, "X (time, per beat)", &mut self.canvas.x_div);
         typed_division(ui, "Y (pitch, per step)", &mut self.canvas.y_div);
         ui.checkbox(&mut self.canvas.show_grid, "Show grid");
-        ui.separator();
-        let current = self.doc.scene.voices[self.doc.selected_voice].curve_sound;
-        // Label on its own line and the box sized to the panel: a side label
-        // made the row wider than the panel and the layout collapsed.
-        let label = ui.label("Curve sound");
-        egui::ComboBox::from_id_salt("curve_sound")
-            .selected_text(current.short_label())
-            .width(ui.available_width())
-            .show_ui(ui, |ui| {
-                for mode in CurveSound::ALL {
-                    if ui.selectable_label(current == mode, mode.label()).clicked()
-                        && mode != current
-                    {
-                        let voice = self.doc.selected_voice;
-                        self.doc.edit(|s| s.voices[voice].curve_sound = mode);
-                    }
-                }
-            })
-            .response
-            .labelled_by(label.id);
-        if ui.button("Export curve variants...").clicked() {
-            self.export_curve_variants();
-        }
         ui.separator();
         ui.label("Pitch axis");
         for (scale, name) in [

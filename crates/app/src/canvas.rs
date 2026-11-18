@@ -8,7 +8,6 @@
 //! - Rectangle: two opposite corners. Circle and Polygon: centre, then a point
 //!   on the circle. Ellipse: centre, then a bounding-box corner.
 //! - Arc is a three-point arc: start, end, then a point it passes through.
-//! - Fill toggles a closed shape between outline and filled (CANVAS-03).
 //! - Select: click picks the nearest shape (within a few pixels), Shift-click
 //!   adds or removes, dragging empty space draws a selection box, dragging a
 //!   shape moves it (and anything else selected), and dragging a handle edits
@@ -58,12 +57,11 @@ pub enum Tool {
     Ellipse,
     Arc,
     Polygon,
-    Fill,
     Delete,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 10] = [
+    pub const ALL: [Tool; 9] = [
         Tool::Select,
         Tool::Line,
         Tool::Polyline,
@@ -72,7 +70,6 @@ impl Tool {
         Tool::Ellipse,
         Tool::Arc,
         Tool::Polygon,
-        Tool::Fill,
         Tool::Delete,
     ];
 
@@ -86,7 +83,6 @@ impl Tool {
             Tool::Ellipse => "Ellipse",
             Tool::Arc => "3-point arc",
             Tool::Polygon => "Polygon",
-            Tool::Fill => "Fill",
             Tool::Delete => "Delete",
         }
     }
@@ -103,7 +99,6 @@ impl Tool {
             Tool::Ellipse => Some(Key::E),
             Tool::Arc => Some(Key::A),
             Tool::Polygon => Some(Key::O),
-            Tool::Fill => Some(Key::F),
             Tool::Delete => None,
         }
     }
@@ -131,13 +126,12 @@ impl Tool {
             (Tool::Arc, _) => "Move to bend the arc, click to place",
             (Tool::Polygon, 0) => "Click or drag: centre",
             (Tool::Polygon, _) => "Click: corner (sets size and rotation)",
-            (Tool::Fill, _) => "Click inside a closed shape to toggle outline / filled",
             (Tool::Delete, _) => "Click a shape to delete it",
         }
     }
 
     fn draws(self) -> bool {
-        !matches!(self, Tool::Select | Tool::Fill | Tool::Delete)
+        !matches!(self, Tool::Select | Tool::Delete)
     }
 }
 
@@ -159,8 +153,6 @@ pub enum Drag {
 /// Canvas UI state (not part of the scene).
 pub struct CanvasState {
     pub tool: Tool,
-    /// New closed shapes are created filled (CANVAS-03 default).
-    pub fill_new: bool,
     pub snap: bool,
     pub show_grid: bool,
     pub bpm: f64,
@@ -192,7 +184,6 @@ impl Default for CanvasState {
     fn default() -> Self {
         Self {
             tool: Tool::Select,
-            fill_new: false,
             snap: true,
             show_grid: true,
             bpm: 120.0,
@@ -296,31 +287,6 @@ pub fn pick(shapes: &[Shape], v: &View, p: Pos2) -> Option<usize> {
     (0..shapes.len())
         .rev()
         .find(|&i| shapes[i].filled && contains(&shapes[i], tp))
-}
-
-/// The innermost closed shape containing screen point `p` (for the Fill tool),
-/// or a closed outline under the pointer.
-pub fn pick_closed(shapes: &[Shape], v: &View, p: Pos2) -> Option<usize> {
-    let tp = v.screen_to_point(p);
-    let area = |s: &Shape| {
-        let (pts, _) = s.vertices();
-        let mut a = 0.0;
-        for i in 0..pts.len() {
-            let (p0, p1) = (
-                v.point_to_screen(pts[i]),
-                v.point_to_screen(pts[(i + 1) % pts.len()]),
-            );
-            a += f64::from(p0.x * p1.y - p1.x * p0.y);
-        }
-        (a / 2.0).abs()
-    };
-    let inside = shapes
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.is_closed() && contains(s, tp))
-        .min_by(|a, b| area(a.1).total_cmp(&area(b.1)))
-        .map(|(i, _)| i);
-    inside.or_else(|| pick(shapes, v, p).filter(|&i| shapes[i].is_closed()))
 }
 
 /// The handle under `p` among the given shapes, nearest first.
@@ -471,15 +437,7 @@ fn points_needed(tool: Tool) -> usize {
 }
 
 fn add_shape(doc: &mut Document, state: &mut CanvasState, geom: Geometry) -> bool {
-    let fill = state.fill_new
-        && matches!(
-            geom,
-            Geometry::Rectangle { .. }
-                | Geometry::Circle { .. }
-                | Geometry::Ellipse { .. }
-                | Geometry::Polygon { .. }
-        );
-    match Shape::new(geom, fill) {
+    match Shape::outline(geom) {
         Ok(shape) => {
             if doc.add_shape(shape) {
                 let n = doc.scene.voices[doc.selected_voice].shapes.len();
@@ -616,49 +574,6 @@ pub fn delete_selected(doc: &mut Document, state: &mut CanvasState) {
     {
         state.status = format!("Deleted {} shape(s)", state.selected.len());
         state.selected.clear();
-    }
-}
-
-/// Toggle outline/filled on a closed shape (CANVAS-03).
-pub fn toggle_fill(doc: &mut Document, state: &mut CanvasState, i: usize) {
-    let voice = doc.selected_voice;
-    if doc
-        .edit(|s| {
-            let shape = &mut s.voices[voice].shapes[i];
-            if shape.is_closed() {
-                shape.filled = !shape.filled;
-            }
-        })
-        .is_some()
-    {
-        let filled = doc.scene.voices[voice].shapes[i].filled;
-        state.status = if filled { "Filled" } else { "Outline" }.into();
-    }
-}
-
-/// Toggle fill on every selected closed shape (the F key with Select).
-pub fn toggle_fill_selected(doc: &mut Document, state: &mut CanvasState) {
-    let voice = doc.selected_voice;
-    let closed: Vec<usize> = state
-        .selected
-        .iter()
-        .copied()
-        .filter(|&i| voice_shapes(doc).get(i).is_some_and(Shape::is_closed))
-        .collect();
-    if closed.is_empty() {
-        state.status = "Select a closed shape to fill".into();
-        return;
-    }
-    let fill = !doc.scene.voices[voice].shapes[closed[0]].filled;
-    if doc
-        .edit(|s| {
-            for &i in &closed {
-                s.voices[voice].shapes[i].filled = fill;
-            }
-        })
-        .is_some()
-    {
-        state.status = if fill { "Filled" } else { "Outline" }.into();
     }
 }
 
@@ -913,10 +828,6 @@ fn handle_pointer(
                 None if !mods.shift => state.selected.clear(),
                 None => {}
             },
-            Tool::Fill => match pick_closed(&shapes_now, v, pos) {
-                Some(i) => toggle_fill(doc, state, i),
-                None => state.status = "Click inside a closed shape to toggle fill".into(),
-            },
             Tool::Delete => {
                 if let Some(i) = pick(&shapes_now, v, pos) {
                     state.selected = BTreeSet::from([i]);
@@ -973,11 +884,7 @@ fn handle_keys(ui: &Ui, response: &Response, doc: &mut Document, state: &mut Can
         if let Some(key) = tool.shortcut()
             && ui.input(|i| i.key_pressed(key))
         {
-            if tool == Tool::Fill && state.tool == Tool::Select && !state.selected.is_empty() {
-                toggle_fill_selected(doc, state);
-            } else {
-                state.set_tool(tool);
-            }
+            state.set_tool(tool);
         }
     }
 }
@@ -1002,8 +909,8 @@ fn set_cursor(ui: &Ui, response: &Response, v: &View, doc: &Document, state: &Ca
                 match state.tool {
                     Tool::Select if state.hover.is_some() => CursorIcon::Move,
                     Tool::Select => CursorIcon::Default,
-                    Tool::Fill | Tool::Delete if state.hover.is_some() => CursorIcon::PointingHand,
-                    Tool::Fill | Tool::Delete => CursorIcon::Default,
+                    Tool::Delete if state.hover.is_some() => CursorIcon::PointingHand,
+                    Tool::Delete => CursorIcon::Default,
                     _ => CursorIcon::Crosshair,
                 }
             }
@@ -1106,15 +1013,10 @@ fn paint(
                 4.0,
             ));
         };
-        if let Some(g) = construct(state.tool, &state.pending, c, k, state.polygon_sides) {
-            let fill = state.fill_new
-                && !matches!(
-                    g,
-                    Geometry::Line { .. } | Geometry::Polyline { .. } | Geometry::Arc { .. }
-                );
-            if let Ok(s) = Shape::new(g, fill) {
-                paint_shape(p, v, &s, PREVIEW_COLOR, false, false);
-            }
+        if let Some(g) = construct(state.tool, &state.pending, c, k, state.polygon_sides)
+            && let Ok(s) = Shape::outline(g)
+        {
+            paint_shape(p, v, &s, PREVIEW_COLOR, false, false);
         }
         // Construction lines, as Onshape shows them.
         let first = v.point_to_screen(state.pending[0]);

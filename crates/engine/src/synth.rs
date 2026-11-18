@@ -99,7 +99,7 @@ pub struct VoiceSynth {
     sr: f64,
     a4_hz: f64,
     ramp_step: f64,
-    /// Gate ramp for curve branches (differs only for `CurveSound::LongFade`).
+    /// Gate ramp for curve branches (`branch::CURVE_FADE_MS`).
     branch_ramp_step: f64,
     control_samples: usize,
     burst_s: f64,
@@ -153,14 +153,9 @@ impl VoiceSynth {
         // one continuous oscillator per branch, with no vertices (branch.rs).
         let mut tone_segs = Vec::new();
         let mut curve_branches = Vec::new();
-        let curve_sound = voice.curve_sound;
         for shape in &voice.shapes {
             if let Some(branches) = branch::branches(&shape.geometry) {
-                curve_branches.extend(
-                    branches
-                        .into_iter()
-                        .filter(|b| curve_sound.selects(b.is_upper())),
-                );
+                curve_branches.extend(branches);
                 continue;
             }
             for seg in shape.edges() {
@@ -171,9 +166,7 @@ impl VoiceSynth {
         }
         let tone_count = tone_segs.len();
         let branch_count = curve_branches.len();
-        let branch_ramp_samples = curve_sound
-            .fade_ms()
-            .map_or(ramp_samples, |ms| (ms * 1e-3 * sr).max(1.0));
+        let branch_ramp_samples = (branch::CURVE_FADE_MS * 1e-3 * sr).max(1.0);
 
         // Lattice from AUDIBLE_MIN_HZ up, spaced by density in cents.
         let step = settings.density_cents / 100.0;

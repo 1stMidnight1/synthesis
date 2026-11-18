@@ -205,18 +205,17 @@ fn line_press_drag_release() {
 }
 
 #[test]
-fn rectangle_both_ways_and_fill_option() {
+fn rectangle_both_ways() {
     let mut u = Ui::new();
     u.tool(Tool::Rectangle);
     let (a, b) = (u.screen(0.5, 60.0), u.screen(1.5, 64.0));
     u.click(a);
     u.click(b);
-    u.app().canvas.fill_new = true;
     let (c, d) = (u.screen(2.0, 62.0), u.screen(3.0, 70.0));
     u.drag(c, d);
     let s = u.shapes();
     assert_eq!(s.len(), 2);
-    assert!(!s[0].filled && s[1].filled);
+    assert!(s.iter().all(|x| !x.filled), "drawn shapes are outlines");
     assert_eq!(
         s[1].geometry,
         Geometry::Rectangle {
@@ -592,62 +591,7 @@ fn moving_a_multi_selection_moves_all() {
     );
 }
 
-// --- Fill ------------------------------------------------------------------
-
-/// Fill works for every closed shape, by clicking inside it, and the click
-/// picks the innermost shape when shapes are nested.
-#[test]
-fn fill_tool_works_on_non_rectangular_shapes() {
-    let mut u = Ui::new();
-    let k = {
-        let v = u.view();
-        v.k_at(v.y_of(64.0))
-    };
-    let circle = sketch::circle(Point::new(1.0, 64.0), Point::new(1.0, 68.0), k).unwrap();
-    let ellipse = sketch::ellipse(Point::new(2.2, 64.0), Point::new(2.6, 67.0)).unwrap();
-    let tri = Geometry::Polygon {
-        points: vec![
-            Point::new(3.0, 60.0),
-            Point::new(3.8, 60.0),
-            Point::new(3.4, 70.0),
-        ],
-    };
-    for g in [circle, ellipse, tri] {
-        assert!(u.app().doc.add_shape(Shape::outline(g).unwrap()));
-    }
-    u.tool(Tool::Fill);
-    for (i, (t, st)) in [(1.0, 64.0), (2.2, 64.0), (3.4, 63.0)]
-        .into_iter()
-        .enumerate()
-    {
-        let p = u.screen(t, st);
-        u.click(p);
-        assert!(u.shapes()[i].filled, "shape {i} filled by clicking inside");
-    }
-    // Outside the triangle but inside its bounding box: no change.
-    let outside = u.screen(3.05, 69.0);
-    u.click(outside);
-    assert!(u.shapes().iter().all(|s| s.filled));
-    // Nested: a small circle inside the big one; clicking it toggles the small one.
-    let small = sketch::circle(Point::new(1.0, 64.0), Point::new(1.0, 65.0), k).unwrap();
-    assert!(u.app().doc.add_shape(Shape::outline(small).unwrap()));
-    let c = u.screen(1.0, 64.0);
-    u.click(c);
-    assert!(u.shapes()[3].filled, "innermost shape toggled");
-    assert!(u.shapes()[0].filled, "outer shape unchanged");
-}
-
-/// F with a selection toggles fill on the selected closed shapes.
-#[test]
-fn f_key_toggles_fill_on_selection() {
-    let mut u = Ui::new();
-    rect_at(&mut u, 1.0, 60.0, 2.0, 64.0);
-    u.tool(Tool::Select);
-    u.app().canvas.selected = BTreeSet::from([0]);
-    u.key(egui::Key::F);
-    assert!(u.shapes()[0].filled);
-    assert_eq!(u.app().canvas.tool, Tool::Select);
-}
+// --- Filled shapes (display only: they sound as bands, see R1) ---------------
 
 /// The fill display covers the interior of a non-rectangular shape and not
 /// the corners of its bounding box: sample the rendered pixels.

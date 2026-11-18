@@ -295,6 +295,22 @@ Profiled before changing anything. A 5-octave fill spent nearly all its time in 
 
 **Not yet done.** Live playback has a per-block cost too, which the offline benchmark does not measure; the parallel path only engages for blocks of 8192 frames or more, so live blocks (1024) run on one thread. Whether that is fast enough for 4+ voices of wide fills on a live stream is untested and should be checked in the app.
 
+## Cleanup: fill tool and curve selector removed (2026-11-18)
+
+Confirmed by the user: remove the fill feature, and remove the curve playback selector while keeping the long fade on.
+
+**Removed (app).** The Fill tool and its F shortcut, "New shapes filled", "Toggle fill", fill-by-click, and fill-on-selection. New shapes are always outlines, and the rubber-band preview is drawn as an outline.
+
+**Removed (curve selector).** The `CurveSound` enum (Literal, LongFade, UpperOnly, LowerOnly), the `Voice::curve_sound` field, the Curve sound combo box, and the "Export curve variants" button. The upper-only and lower-only modes and the 2 ms fade are gone with them.
+
+**Kept.** The curve fade is a fixed constant, `CURVE_FADE_MS = 15`, applied to every curve branch. Both branches of a closed curve always sound together. The post-end envelope is unchanged (0.94, 0.92, 0.86 ... declining over about 15 ms).
+
+**Kept on purpose: filled shapes in the engine.** A filled shape still sounds as a band of frequencies. This is the M1 acceptance requirement in PLAN.md section 9 ("a filled rectangle renders a band with energy between the two edges") and is covered by its tests, so removing it would break an accepted milestone. Only the editing feature is removed. The canvas still tints a filled shape so the display matches what sounds. If you want filled shapes removed from the engine as well, that changes an accepted requirement and needs a separate decision.
+
+**Test changes.** Removed the variant-selection, variant-export, default-variant and listening-writer tests, which existed only for the removed modes. Replaced the fill-tool and F-key tests with the rectangle test that checks drawn shapes are outlines. Kept the filled-shape display test. Engine: 87 unit, 12 acceptance, 1 golden. App: 47.
+
+**Checks.** fmt, workspace tests, clippy with warnings denied, Windows type-checks for engine and app, release build: all pass.
+
 ## Proposed
 
 _None yet._

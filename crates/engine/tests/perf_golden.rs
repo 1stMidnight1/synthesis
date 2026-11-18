@@ -13,8 +13,8 @@ use std::f64::consts::PI;
 use synthesis_engine::lanes::{Lane, LanePoint, Stroke};
 use synthesis_engine::pitch::hz_to_st;
 use synthesis_engine::{
-    CurveSound, DepthUnit, Geometry, Micro, Point, Preset, Scene, SceneRenderer, Settings, Shape,
-    Voice, render_scene,
+    DepthUnit, Geometry, Micro, Point, Preset, Scene, SceneRenderer, Settings, Shape, Voice,
+    render_scene,
 };
 
 fn st(hz: f64) -> f64 {
@@ -93,7 +93,6 @@ pub fn golden_scene() -> Scene {
         })
         .unwrap(),
     ];
-    b.curve_sound = CurveSound::LongFade;
     s.voices.push(a);
     s.voices.push(b);
     s
