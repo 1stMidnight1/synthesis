@@ -242,6 +242,18 @@ Four variants are selectable per voice ("Curve sound" in the sketch panel), so t
 
 **Test results (2026-11-17, macOS arm64).** `cargo test --workspace`: 48 app, 86 engine unit, 14 engine acceptance, 1 render. `cargo clippy --workspace --all-targets -- -D warnings`: pass. Windows type-checks for engine and app: pass. Release build: pass.
 
+## M3 polish: arc-end pops fixed by a longer fade (2026-11-17)
+
+**Confirmed by ear on headphones.** The 2 ms fade on curve branches produces an audible pop at each arc's start and end. The 15 ms fade removes it. Earlier measurements had pointed here, but only a listening test could confirm it, and the in-app and export paths produce identical samples, so the pop is a property of the signal's fade, heard most clearly on headphones and at low frequency.
+
+**Change.** The default `CurveSound` is now `LongFade` (15 ms fades at the turn points). The 2 ms variant is kept as "Both, short fades (2 ms)" for comparison. Regression test `default_curve_sound_has_soft_arc_ends`: the 2 ms fade is over by 3 ms, the 15 ms fade is still ringing at 3 and 10 ms.
+
+**Measurement note.** A first version of the regression test read the wrong 1 ms block and failed. The check was on my side: it measured the block at the fade's tail instead of the block after it. Corrected to whole 1 ms blocks.
+
+**Still open.** The 15 ms default is a fix for the pop, not a tuned sound. The fade length could be shorter (for example 5 to 10 ms) if the start still reads as a pop-free attack too slow; that is a listening choice. Also, the built-in speaker may colour low frequencies, so a fade that is clean on headphones may still sound different there.
+
+**Test results.** `cargo test --workspace`: 48 app, 86 engine unit, 15 engine acceptance, 2 others. `cargo clippy --workspace --all-targets -- -D warnings`: pass. Windows type-checks: pass. Release build: pass.
+
 ## Proposed
 
 _None yet._

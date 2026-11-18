@@ -539,3 +539,46 @@ fn master_gain_scales_output_and_removes_clipping() {
     assert!(over(&loud) > 0, "70% master clips this scene");
     assert_eq!(over(&quiet), 0, "30% master stays inside full scale");
 }
+
+/// Regression (heard on headphones): a 2 ms fade at an arc's start and end is
+/// an audible pop. The default curve sound must fade over about 15 ms at each
+/// end, not 2 ms, so the arc ends softly. The 2 ms variant stays available.
+#[test]
+fn default_curve_sound_has_soft_arc_ends() {
+    use synthesis_engine::CurveSound;
+    assert_eq!(CurveSound::default(), CurveSound::LongFade);
+    let arc = Shape::outline(Geometry::Arc {
+        center: Point::new(1.0, 69.0),
+        rx_s: 0.5,
+        ry_st: 6.0,
+        start_rad: 0.0,
+        sweep_rad: std::f64::consts::PI,
+    })
+    .unwrap();
+    // Peak amplitude in the 1 ms block that starts `ms` after the end.
+    let block_after_end = |mode: CurveSound, ms: usize| {
+        let mut s = scene_with(2.0, arc.clone());
+        s.settings.master_gain = 1.0;
+        s.voices[0].curve_sound = mode;
+        let out = render_scene(&s).unwrap();
+        let a = (1.5 * f64::from(SR)) as usize + ms * 48;
+        out.left[a..a + 48]
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()))
+    };
+    // The 2 ms fade is finished from the third millisecond on; the 15 ms fade
+    // is still ringing down at 10 ms.
+    assert!(
+        block_after_end(CurveSound::Literal, 3) < 1e-3,
+        "short fade is over by 3 ms"
+    );
+    assert!(
+        block_after_end(CurveSound::LongFade, 3) > 0.5,
+        "long fade still high at 3 ms"
+    );
+    let long_10 = block_after_end(CurveSound::LongFade, 10);
+    assert!(
+        long_10 > 0.2 && long_10 < 0.5,
+        "long fade still ringing at 10 ms: {long_10}"
+    );
+}

@@ -34,14 +34,15 @@ pub struct Branch {
 pub const LONG_FADE_MS: f64 = 15.0;
 
 /// How a curved outline sounds. Chosen per voice so variants can be compared
-/// by ear. The default is the literal reading of R1: both branches together,
-/// with the short fades used for every outline tone.
+/// by ear. The default is both branches together with 15 ms fades at the
+/// turn points: a 2 ms fade is an audible pop at the start and end of an arc
+/// on headphones (confirmed by ear), while 15 ms removes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CurveSound {
-    /// Both branches sound together, 2 ms fades.
-    #[default]
+    /// Both branches sound together, 2 ms fades. Pops at the turn points.
     Literal,
-    /// Both branches sound together, 15 ms fades at the turn points.
+    /// Both branches sound together, 15 ms fades at the turn points (default).
+    #[default]
     LongFade,
     /// Only the upper branch: one pitch at each time.
     UpperOnly,
@@ -59,8 +60,8 @@ impl CurveSound {
 
     pub fn label(self) -> &'static str {
         match self {
-            CurveSound::Literal => "Literal (both, 2 ms)",
-            CurveSound::LongFade => "Both, long fades (15 ms)",
+            CurveSound::Literal => "Both, short fades (2 ms)",
+            CurveSound::LongFade => "Both, long fades (15 ms, default)",
             CurveSound::UpperOnly => "Upper only",
             CurveSound::LowerOnly => "Lower only",
         }
@@ -306,7 +307,11 @@ mod tests {
         assert!(LongFade.selects(true) && LongFade.selects(false));
         assert!(UpperOnly.selects(true) && !UpperOnly.selects(false));
         assert!(!LowerOnly.selects(true) && LowerOnly.selects(false));
-        assert_eq!(CurveSound::default(), Literal);
+        assert_eq!(
+            CurveSound::default(),
+            LongFade,
+            "long fades are the default"
+        );
         assert_eq!(LongFade.fade_ms(), Some(LONG_FADE_MS));
         assert_eq!(Literal.fade_ms(), None);
     }
