@@ -288,9 +288,13 @@ mod tests {
         r.seek(1.5); // into the second tone
         let on = r.next_block(4_800);
         let level = rms(&on.left[480..]);
+        // A unit sine has RMS 1/sqrt(2); a new voice plays through its default
+        // 75% volume lane (DEFAULT_STROKE_PERCENT), so the expected level is 0.75 of that.
+        let expected =
+            std::f64::consts::FRAC_1_SQRT_2 * crate::lanes::DEFAULT_STROKE_PERCENT / 100.0;
         assert!(
-            (level - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.01,
-            "tone level {level}"
+            (level - expected).abs() < 0.01,
+            "tone level {level}, expected {expected}"
         );
         // The first samples ramp in rather than jump (ENGINE-05).
         assert!(on.left[0].abs() < 0.01);

@@ -346,6 +346,27 @@ Per-block cost, release build, Apple M3, scene of one circle plus one wide line 
 
 Result: the live path has roughly 25x headroom at eight voices. The measurement covers the engine as it is after filled-shape removal. Wide fills were the M2.5 worst case, and they no longer exist; the scene measured here is the current heaviest content (curves and bursts). Real-time playback under load is therefore not the risk PLAN.md feared. Still unmeasured: audio-thread cost of the ring and the device, which is a separate check.
 
+## M4 volume: one canvas, Tone and Volume tabs (2026-11-18)
+
+Confirmed by the user: volume is a second tab of the same canvas, not a separate area. The graph area and the tools carry over between tabs.
+
+**Design.**
+- One canvas. A Tone/Volume switch sits at the top of the Sketch panel. Time is on X in both tabs, with the same ruler, grid, navigation and tool palette.
+- The tab changes the vertical axis only. `View` has a `VerticalMode`: Tone (pitch, unchanged) or Volume (level in percent, 0 to 200, R5/D-10).
+- In Volume, Line and Polyline build lane strokes on the chosen channel (Left, Right, Both; VOL-02). Delete removes the stroke under the pointer. Select is not yet wired to lanes (moving strokes is a later step). Rectangles, circles, ellipses, arcs and polygons are not offered in Volume: they do not describe a level over time.
+- A stroke present in both lanes is one `Both` stroke and draws purple. A new voice's default stroke is purple at 75% (confirmed).
+- Each lane edit is one undo step, through `Document::edit`.
+
+**Lane rules (confirmed earlier, now in the engine).** An empty lane is silent. A gap between strokes is silent. A new voice gets a 75% stroke on both channels.
+
+**What was wrong before, and what I changed.** A first attempt put a second, separate volume panel below the pitch canvas. That was the wrong structure, and it is removed. It also showed the level axis labelled in pitch and strokes on the wrong scale. Fixing the grid to percent (`paint_level_grid`) and routing strokes through the same `View` as the grid made them agree.
+
+**An error in my earlier testing, corrected.** The UI test harness built its `View` with a fixed Tone mode, so no test that used it measured the Volume tab. The click-through tests failed for that reason, and they measured the wrong place. The harness now uses the canvas's own tab. Volume tests written before this fix proved nothing about Volume, and are superseded by the click-through tests (`volume_line_click_click_adds_a_stroke_and_undoes`, `volume_delete_removes_the_stroke_under_the_pointer`).
+
+**Test results (2026-11-18, macOS arm64).** `cargo fmt --all -- --check`, `cargo test --workspace` (154 passing: 56 app, 86 engine unit, 11 engine acceptance, 1 golden), `cargo clippy --workspace --all-targets -- -D warnings`, Windows type-checks for engine and app, and the release build all pass.
+
+**Not verified.** Select and move for lane strokes. Freehand (deferred, as agreed). Audible result of the volume lanes; the new default volume is 75%, and its loudness should be heard.
+
 ## Proposed
 
 _None yet._

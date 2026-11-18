@@ -26,7 +26,23 @@ pub struct View {
     pub time: TimeView,
     pub pitch: PitchView,
     pub a4: f64,
+    /// What the vertical axis means. The canvas has one set of tools and one
+    /// grid; this decides whether Y is pitch (Tone) or level (Volume).
+    pub mode: VerticalMode,
 }
+
+/// The two tabs of the one canvas. Time is on X in both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VerticalMode {
+    /// Y is pitch (semitones, Hz). The default.
+    #[default]
+    Tone,
+    /// Y is level in percent, 0 at the bottom to `LEVEL_MAX` at the top (R5).
+    Volume,
+}
+
+/// Top of the volume axis, in percent (R5, D-10).
+pub const LEVEL_MAX: f64 = 200.0;
 
 impl View {
     pub fn x_of(&self, t: f64) -> f32 {
@@ -65,12 +81,27 @@ impl View {
         self.hz_of_frac(f64::from((self.rect.bottom() - y) / self.rect.height()))
     }
 
-    pub fn y_of(&self, st: f64) -> f32 {
-        self.y_of_hz(st_to_hz(st, self.a4))
+    /// Screen Y of a vertical value: a pitch in semitones (Tone) or a level
+    /// in percent (Volume).
+    pub fn y_of(&self, v: f64) -> f32 {
+        match self.mode {
+            VerticalMode::Tone => self.y_of_hz(st_to_hz(v, self.a4)),
+            VerticalMode::Volume => {
+                self.rect.bottom() - (v / LEVEL_MAX) as f32 * self.rect.height()
+            }
+        }
     }
 
+    /// The vertical value at screen Y: a pitch in semitones (Tone) or a level
+    /// in percent (Volume), clamped to the axis in Volume.
     pub fn st_of(&self, y: f32) -> f64 {
-        hz_to_st(self.hz_of_y(y).max(1e-6), self.a4)
+        match self.mode {
+            VerticalMode::Tone => hz_to_st(self.hz_of_y(y).max(1e-6), self.a4),
+            VerticalMode::Volume => {
+                let f = f64::from((self.rect.bottom() - y) / self.rect.height());
+                (f * LEVEL_MAX).clamp(0.0, LEVEL_MAX)
+            }
+        }
     }
 
     pub fn point_to_screen(&self, p: Point) -> Pos2 {
@@ -210,6 +241,7 @@ mod tests {
                 scale,
             },
             a4: 440.0,
+            mode: VerticalMode::default(),
         }
     }
 
@@ -321,5 +353,51 @@ mod tests {
         assert!(v.pitch.lo_hz >= MIN_HZ - 1e-9 && v.pitch.hi_hz <= MAX_HZ + 1e-6);
         pan(&mut v.time, &mut v.pitch, v.rect, Vec2::new(1e6, 0.0));
         assert!(v.time.start_s >= 0.0);
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    fn view(mode: VerticalMode) -> View {
+        View {
+            rect: Rect::from_min_size(Pos2::new(40.0, 20.0), Vec2::new(800.0, 400.0)),
+            time: TimeView {
+                start_s: 0.0,
+                width_s: 4.0,
+            },
+            pitch: PitchView::default(),
+            a4: 440.0,
+            mode,
+        }
+    }
+
+    /// Tone is unchanged: a point's Y is its pitch, and round-trips.
+    #[test]
+    fn tone_round_trips_as_before() {
+        let v = view(VerticalMode::Tone);
+        let p = Point::new(1.5, 64.0);
+        let back = v.screen_to_point(v.point_to_screen(p));
+        assert!((back.st - 64.0).abs() < 1e-3);
+    }
+
+    /// Volume: 0% is the bottom edge, LEVEL_MAX is the top edge, and 100% is the middle.
+    #[test]
+    fn volume_axis_runs_0_to_200_percent_bottom_to_top() {
+        let v = view(VerticalMode::Volume);
+        assert!((v.y_of(0.0) - v.rect.bottom()).abs() < 1e-3);
+        assert!((v.y_of(LEVEL_MAX) - v.rect.top()).abs() < 1e-3);
+        assert!((v.y_of(100.0) - v.rect.center().y).abs() < 1e-3);
+        let back = v.st_of(v.y_of(75.0));
+        assert!((back - 75.0).abs() < 1e-6);
+    }
+
+    /// Volume: the value is clamped to the axis when the pointer is outside it.
+    #[test]
+    fn volume_value_is_clamped_to_the_axis() {
+        let v = view(VerticalMode::Volume);
+        assert_eq!(v.st_of(v.rect.top() - 100.0), LEVEL_MAX);
+        assert_eq!(v.st_of(v.rect.bottom() + 100.0), 0.0);
     }
 }

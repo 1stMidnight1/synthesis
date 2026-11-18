@@ -365,12 +365,16 @@ mod tests {
         .unwrap()
     }
 
-    /// Master gain 100%: a tone has RMS 0.707.
+    /// Master gain 100% and both volume lanes at 100%, so a tone has RMS 0.707
+    /// and the assertions measure playback. A new voice's default lane is 75%
+    /// (see `Voice::new`), which is tested on its own; here it is set to unity.
     fn scene(shapes: Vec<Shape>, dur: f64) -> Scene {
         let mut s = Scene::new(dur, Settings::default());
         s.settings.master_gain = 1.0;
         let mut v = Voice::new("v");
         v.shapes = shapes;
+        v.lane_left = synthesis_engine::Lane::flat(100.0, dur);
+        v.lane_right = synthesis_engine::Lane::flat(100.0, dur);
         s.voices.push(v);
         s
     }

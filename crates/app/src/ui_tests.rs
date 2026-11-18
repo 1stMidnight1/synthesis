@@ -55,6 +55,8 @@ impl Ui {
             time: app.doc.time,
             pitch: app.doc.pitch,
             a4: app.doc.scene.settings.a4_hz,
+            // The canvas's own tab, so test points map where the canvas draws them.
+            mode: app.canvas.mode,
         }
     }
 
@@ -991,4 +993,114 @@ fn pitch_labels_are_outside_the_grid() {
     // Time 0 is at the plot's left edge in both the ruler and the grid.
     let v = u.view();
     assert!((v.x_of(0.0) - plot.left()).abs() < 0.5);
+}
+
+/// Screenshot of the Volume tab on the single canvas, with a stroke in each
+/// lane, to check the axis and strokes against the pitch canvas layout.
+#[test]
+fn screenshot_volume_tab() {
+    let Ok(dir) = std::env::var("SYNTHESIS_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut u = Ui::new();
+    u.app().canvas.mode = crate::view::VerticalMode::Volume;
+    // Left at 150%, right at 60%, and a Both stroke at 100%.
+    let voice = &mut u.app().doc.scene.voices[0];
+    voice.lane_left = synthesis_engine::Lane::default();
+    voice.lane_right = synthesis_engine::Lane::default();
+    let stroke = |a: f64, pa: f64, b: f64, pb: f64| {
+        synthesis_engine::Stroke::new(vec![
+            synthesis_engine::LanePoint::new(a, pa),
+            synthesis_engine::LanePoint::new(b, pb),
+        ])
+        .unwrap()
+    };
+    voice.lane_left.strokes.push(stroke(0.0, 150.0, 2.5, 150.0));
+    voice.lane_right.strokes.push(stroke(0.5, 60.0, 3.5, 60.0));
+    voice.lane_left.strokes.push(stroke(0.0, 100.0, 4.0, 100.0));
+    voice
+        .lane_right
+        .strokes
+        .push(stroke(0.0, 100.0, 4.0, 100.0));
+    u.h.run_steps(3);
+    let img = u.h.render().expect("render");
+    img.save(dir.join("volume_tab.png")).unwrap();
+}
+
+/// Volume tab, clicked through the real window: two clicks draw a lane line in
+/// the chosen channel at the clicked levels, and one undo removes it.
+#[test]
+fn volume_line_click_click_adds_a_stroke_and_undoes() {
+    let mut u = Ui::new();
+    u.app().canvas.mode = crate::view::VerticalMode::Volume;
+    u.app().canvas.channel = crate::volume::Channel::Left;
+    u.app().canvas.snap = false;
+    u.tool(Tool::Line);
+    // Clear the default purple strokes so the count is exact.
+    {
+        let v = &mut u.app().doc.scene.voices[0];
+        v.lane_left = synthesis_engine::Lane::default();
+        v.lane_right = synthesis_engine::Lane::default();
+    }
+    let a = u.screen(0.5, 150.0);
+    let b = u.screen(2.5, 60.0);
+    u.click(a);
+    u.click(b);
+    let strokes = u.app().doc.scene.voices[0].lane_left.strokes.clone();
+    assert_eq!(strokes.len(), 1, "one left-lane stroke");
+    assert!(
+        u.app().doc.scene.voices[0].lane_right.strokes.is_empty(),
+        "right lane untouched"
+    );
+    let p = &strokes[0].points;
+    assert!(
+        (p[0].t_s - 0.5).abs() < 1e-3 && (p[0].percent - 150.0).abs() < 0.5,
+        "start {:?}",
+        p[0]
+    );
+    assert!(
+        (p[1].t_s - 2.5).abs() < 1e-3 && (p[1].percent - 60.0).abs() < 0.5,
+        "end {:?}",
+        p[1]
+    );
+    u.app().undo();
+    assert!(
+        u.app().doc.scene.voices[0].lane_left.strokes.is_empty(),
+        "undo removes it"
+    );
+}
+
+/// Volume tab: Delete removes the lane stroke under the pointer, one undo step.
+#[test]
+fn volume_delete_removes_the_stroke_under_the_pointer() {
+    let mut u = Ui::new();
+    u.app().canvas.mode = crate::view::VerticalMode::Volume;
+    u.app().canvas.channel = crate::volume::Channel::Both;
+    {
+        let v = &mut u.app().doc.scene.voices[0];
+        v.lane_left = synthesis_engine::Lane::default();
+        v.lane_right = synthesis_engine::Lane::default();
+        let s = synthesis_engine::Stroke::new(vec![
+            synthesis_engine::LanePoint::new(0.0, 120.0),
+            synthesis_engine::LanePoint::new(4.0, 120.0),
+        ])
+        .unwrap();
+        v.lane_left.strokes.push(s.clone());
+        v.lane_right.strokes.push(s);
+    }
+    u.tool(Tool::Delete);
+    let on = u.screen(2.0, 120.0);
+    u.click(on);
+    assert!(
+        u.app().doc.scene.voices[0].lane_left.strokes.is_empty(),
+        "left stroke removed"
+    );
+    u.app().undo();
+    assert_eq!(
+        u.app().doc.scene.voices[0].lane_left.strokes.len(),
+        1,
+        "undo restores it"
+    );
 }

@@ -5,7 +5,7 @@
 
 use crate::error::{EngineError, Result};
 use crate::geometry::Shape;
-use crate::lanes::Lane;
+use crate::lanes::{DEFAULT_STROKE_PERCENT, Lane};
 use crate::micro::Micro;
 
 /// Maximum project length (R10, D-14).
@@ -101,9 +101,14 @@ pub struct Voice {
 }
 
 impl Voice {
+    /// A new voice. Both volume lanes start with the default purple stroke at
+    /// 75% (confirmed 2026-11-18), so the voice sounds from creation. A voice
+    /// whose strokes are later removed is silent, as an empty lane is.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            lane_left: Lane::flat(DEFAULT_STROKE_PERCENT, MAX_DURATION_S),
+            lane_right: Lane::flat(DEFAULT_STROKE_PERCENT, MAX_DURATION_S),
             ..Self::default()
         }
     }

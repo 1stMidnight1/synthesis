@@ -3,10 +3,10 @@
 //! Each voice has one lane per channel (left and right). A lane is a set of
 //! strokes. Each stroke is a piecewise-linear curve in percent over time.
 //!
-//! Defaults (not confirmed in SPEC; recorded in DECISIONS.md):
-//! - A lane with no strokes is a constant 100%.
-//! - Once a lane has strokes, time outside every stroke contributes 0%, so the
-//!   channel is silent there.
+//! Rules (confirmed by the user, 2026-11-18; see DECISIONS.md, "Roadmap after M3"):
+//! - An empty lane emits no sound (silent). A new voice gets a default purple
+//!   stroke at 75% on both channels, so it sounds from creation.
+//! - Time outside every stroke, or in a gap between strokes, is silent.
 //! - Overlapping strokes add (VOL-04), and the sum is clamped to 0..=200% (R5).
 
 use crate::error::{EngineError, Result};
@@ -14,8 +14,9 @@ use crate::error::{EngineError, Result};
 /// Maximum summed lane value in percent (R5, D-10).
 pub const LANE_MAX_PERCENT: f64 = 200.0;
 
-/// Value of an empty lane in percent.
-pub const LANE_DEFAULT_PERCENT: f64 = 100.0;
+/// Level of the default stroke a new voice gets on each channel (confirmed
+/// 2026-11-18). Chosen so a fresh voice is audible without clipping.
+pub const DEFAULT_STROKE_PERCENT: f64 = 75.0;
 
 /// A point on a lane: time in seconds and value in percent.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -100,13 +101,23 @@ impl Lane {
         self.strokes.iter().try_for_each(Stroke::validate)
     }
 
-    /// Linear gain at `t` seconds (R5): `sum(stroke percent) / 100`, clamped to 0..=2.
+    /// Linear gain at `t` seconds (R5): `sum(stroke percent) / 100`, clamped to
+    /// 0..=2. An empty lane, and any time outside every stroke, gives 0 (silent).
     pub fn gain_at(&self, t: f64) -> f64 {
-        if self.strokes.is_empty() {
-            return LANE_DEFAULT_PERCENT / 100.0;
-        }
         let sum: f64 = self.strokes.iter().filter_map(|s| s.value_at(t)).sum();
         (sum / 100.0).clamp(0.0, LANE_MAX_PERCENT / 100.0)
+    }
+
+    /// A lane holding one flat stroke at `percent` over `[0, duration_s]`.
+    pub fn flat(percent: f64, duration_s: f64) -> Lane {
+        Lane {
+            strokes: vec![Stroke {
+                points: vec![
+                    LanePoint::new(0.0, percent),
+                    LanePoint::new(duration_s, percent),
+                ],
+            }],
+        }
     }
 }
 
@@ -123,10 +134,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_lane_is_constant_unity() {
+    fn empty_lane_is_silent() {
         let lane = Lane::default();
-        assert_eq!(lane.gain_at(0.0), 1.0);
-        assert_eq!(lane.gain_at(59.0), 1.0);
+        assert_eq!(lane.gain_at(0.0), 0.0);
+        assert_eq!(lane.gain_at(59.0), 0.0);
+    }
+
+    #[test]
+    fn default_stroke_is_75_percent_and_flat() {
+        let lane = Lane::flat(DEFAULT_STROKE_PERCENT, 10.0);
+        assert!((lane.gain_at(0.0) - 0.75).abs() < 1e-12);
+        assert!((lane.gain_at(5.0) - 0.75).abs() < 1e-12);
+        assert_eq!(lane.gain_at(10.5), 0.0, "silent after the stroke ends");
     }
 
     #[test]

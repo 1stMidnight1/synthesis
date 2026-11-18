@@ -299,6 +299,41 @@ impl SynthesisApp {
 
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Sketch");
+        // One canvas, two tabs. The tools, navigation and grid carry over; the
+        // tab changes the vertical axis and what a line or polyline creates.
+        ui.horizontal(|ui| {
+            for (label, mode) in [
+                ("Tone", crate::view::VerticalMode::Tone),
+                ("Volume", crate::view::VerticalMode::Volume),
+            ] {
+                if ui
+                    .selectable_label(self.canvas.mode == mode, label)
+                    .clicked()
+                    && self.canvas.mode != mode
+                {
+                    self.canvas.mode = mode;
+                    self.canvas.pending.clear();
+                    self.canvas.drag = None;
+                }
+            }
+        });
+        if self.canvas.mode == crate::view::VerticalMode::Volume {
+            ui.horizontal(|ui| {
+                for (label, ch) in [
+                    ("Left", crate::volume::Channel::Left),
+                    ("Right", crate::volume::Channel::Right),
+                    ("Both", crate::volume::Channel::Both),
+                ] {
+                    if ui
+                        .selectable_label(self.canvas.channel == ch, label)
+                        .clicked()
+                    {
+                        self.canvas.channel = ch;
+                    }
+                }
+            });
+        }
+        ui.separator();
         for tool in Tool::ALL {
             let key = tool
                 .shortcut()
@@ -448,7 +483,8 @@ impl SynthesisApp {
                 self.seek(t);
             }
             let a4 = self.doc.scene.settings.a4_hz;
-            let resp = canvas::show(ui, &mut self.doc, &mut self.canvas, a4);
+            let height = ui.available_height();
+            let resp = canvas::show(ui, &mut self.doc, &mut self.canvas, a4, height);
             // Playhead across the canvas.
             let x = resp.rect.left()
                 + ((self.playhead_s - self.doc.time.start_s) / self.doc.time.width_s) as f32

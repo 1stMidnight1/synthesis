@@ -152,6 +152,10 @@ pub enum Drag {
 /// Canvas UI state (not part of the scene).
 pub struct CanvasState {
     pub tool: Tool,
+    /// Which tab the one canvas shows: pitch (Tone) or level (Volume).
+    pub mode: crate::view::VerticalMode,
+    /// In the Volume tab, which lane a new stroke goes to (VOL-02).
+    pub channel: crate::volume::Channel,
     pub snap: bool,
     pub show_grid: bool,
     pub bpm: f64,
@@ -183,6 +187,8 @@ impl Default for CanvasState {
     fn default() -> Self {
         Self {
             tool: Tool::Select,
+            mode: crate::view::VerticalMode::Tone,
+            channel: crate::volume::Channel::Both,
             snap: true,
             show_grid: true,
             bpm: 120.0,
@@ -564,8 +570,14 @@ pub fn delete_selected(doc: &mut Document, state: &mut CanvasState) {
 // ---------------------------------------------------------------------------
 
 /// Draw the canvas and handle its input.
-pub fn show(ui: &mut Ui, doc: &mut Document, state: &mut CanvasState, a4: f64) -> Response {
-    let size = Vec2::new(ui.available_width(), ui.available_height().max(120.0));
+pub fn show(
+    ui: &mut Ui,
+    doc: &mut Document,
+    state: &mut CanvasState,
+    a4: f64,
+    height: f32,
+) -> Response {
+    let size = Vec2::new(ui.available_width(), height.max(120.0));
     let (full, _) = ui.allocate_exact_size(size, Sense::hover());
     // Pitch labels live in a gutter to the left; the grid and all interaction
     // live in the plot rectangle, so labels never sit on top of the grid.
@@ -588,6 +600,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, state: &mut CanvasState, a4: f64) -
         time: doc.time,
         pitch: doc.pitch,
         a4,
+        mode: state.mode,
     };
 
     // Drop selection indices that no longer exist (after undo, for example).
@@ -796,6 +809,14 @@ fn handle_pointer(
     }
 
     // Clicks.
+    if response.clicked_by(primary)
+        && !ui.input(|i| i.key_down(egui::Key::Space))
+        && v.mode == crate::view::VerticalMode::Volume
+    {
+        let pos = response.interact_pointer_pos().unwrap_or_default();
+        volume_click(doc, state, v, pos);
+        return;
+    }
     if response.clicked_by(primary) && !ui.input(|i| i.key_down(egui::Key::Space)) {
         let pos = response.interact_pointer_pos().unwrap_or_default();
         let at = snap(pos, v, state, &shapes_now, None, mods.alt).0;
@@ -830,6 +851,78 @@ fn handle_pointer(
             }
         }
     }
+}
+
+/// A click in the Volume tab. Line and Polyline build a lane stroke from
+/// (time, level) points; Delete removes the stroke under the pointer. Every
+/// change is one undo step, through `Document::edit`.
+fn volume_click(doc: &mut Document, state: &mut CanvasState, v: &View, pos: Pos2) {
+    use crate::volume::{self, Edit};
+    match state.tool {
+        Tool::Delete => {
+            let voice = doc.selected_voice;
+            let ch = state.channel;
+            let strokes: Vec<synthesis_engine::Stroke> = match ch {
+                crate::volume::Channel::Right => doc.scene.voices[voice].lane_right.strokes.clone(),
+                _ => doc.scene.voices[voice].lane_left.strokes.clone(),
+            };
+            if let Some(i) = volume::pick_stroke(&strokes, v, pos, PICK_PX) {
+                let edit = Edit::RemoveStroke(ch, i);
+                apply_volume_edit(doc, state, edit, "Stroke deleted");
+            } else {
+                state.status = "Click on a stroke to delete it".into();
+            }
+        }
+        Tool::Line | Tool::Polyline => {
+            let t = v.t_of(pos.x).max(0.0);
+            let level = volume::snap_level(v.st_of(pos.y), state.snap);
+            let p = (t, level);
+            if state.tool == Tool::Polyline {
+                if state.pending.last().map(|q| (q.t, q.st)) == Some(p) {
+                    // Clicking the last point again finishes the polyline.
+                    if let Some(edit) = volume::finish_points(&mut state.pending, state.channel) {
+                        apply_volume_edit(doc, state, edit, "Stroke added");
+                    }
+                    return;
+                }
+                state.pending.push(Point::new(p.0, p.1));
+                return;
+            }
+            // Line: two clicks; the next line starts at the previous end.
+            if state.pending.is_empty() {
+                state.pending.push(Point::new(p.0, p.1));
+                return;
+            }
+            let a = state.pending[0];
+            let edit = volume::line_stroke((a.t, a.st), p)
+                .map(|stroke| Edit::AddStroke(state.channel, stroke));
+            state.pending = vec![Point::new(p.0, p.1)];
+            if let Some(edit) = edit {
+                apply_volume_edit(doc, state, edit, "Stroke added");
+            }
+        }
+        _ => {
+            state.status = "Select, Line, Polyline or Delete work in the Volume tab".into();
+        }
+    }
+}
+
+/// Apply a lane edit to the selected voice as one undoable step.
+fn apply_volume_edit(
+    doc: &mut Document,
+    state: &mut CanvasState,
+    edit: crate::volume::Edit,
+    done: &str,
+) {
+    let voice = doc.selected_voice;
+    let ok = doc
+        .edit(|s| crate::volume::apply(&mut s.voices[voice], &edit))
+        .unwrap_or(false);
+    state.status = if ok {
+        done.into()
+    } else {
+        "Lane edit rejected".into()
+    };
 }
 
 fn handle_keys(ui: &Ui, response: &Response, doc: &mut Document, state: &mut CanvasState) {
@@ -929,6 +1022,11 @@ fn paint(
     state: &CanvasState,
 ) {
     paint_grid(p, gp, gutter, v, state);
+    if v.mode == crate::view::VerticalMode::Volume {
+        paint_lanes(p, v, doc);
+        paint_lane_readout(p, v, state);
+        return;
+    }
     let shapes = voice_shapes(doc);
 
     // Shapes, with the in-progress edit applied for preview.
@@ -1049,6 +1147,60 @@ fn paint(
     }
 }
 
+/// The lane strokes of the selected voice, on the Volume axis (VOL-02). A
+/// stroke present in both lanes is one `Both` stroke, drawn purple.
+fn paint_lanes(p: &egui::Painter, v: &View, doc: &Document) {
+    let Some(voice) = doc.scene.voices.get(doc.selected_voice) else {
+        return;
+    };
+    let (left, right) = (&voice.lane_left.strokes, &voice.lane_right.strokes);
+    for stroke in left {
+        let color = if right.contains(stroke) {
+            crate::volume::BOTH_COLOR
+        } else {
+            crate::volume::LEFT_COLOR
+        };
+        paint_lane_stroke(p, v, stroke, color);
+    }
+    for stroke in right {
+        if !left.contains(stroke) {
+            paint_lane_stroke(p, v, stroke, crate::volume::RIGHT_COLOR);
+        }
+    }
+}
+
+fn paint_lane_stroke(
+    p: &egui::Painter,
+    v: &View,
+    stroke: &synthesis_engine::Stroke,
+    color: Color32,
+) {
+    let pts: Vec<Pos2> = stroke
+        .points
+        .iter()
+        .map(|q| v.point_to_screen(Point::new(q.t_s, q.percent)))
+        .collect();
+    if pts.len() >= 2 {
+        p.add(EShape::line(pts.clone(), Stroke::new(2.0, color)));
+    }
+    for q in pts {
+        p.circle_filled(q, 3.0, color);
+    }
+}
+
+/// The time and level under the pointer, bottom right, in the Volume tab.
+fn paint_lane_readout(p: &egui::Painter, v: &View, state: &CanvasState) {
+    if let Some(c) = state.cursor {
+        p.text(
+            v.rect.right_bottom() - Vec2::new(8.0, 6.0),
+            egui::Align2::RIGHT_BOTTOM,
+            format!("{:.3} s   {:.0}%", c.t, c.st),
+            egui::FontId::monospace(11.0),
+            Color32::from_gray(170),
+        );
+    }
+}
+
 fn paint_shape(
     p: &egui::Painter,
     v: &View,
@@ -1074,6 +1226,51 @@ fn paint_shape(
         ));
     }
     p.add(EShape::line(pts, Stroke::new(width, stroke_color)));
+}
+
+/// The Volume tab's grid: level lines every 25%, with 100% (unity) emphasised,
+/// labelled in percent in the gutter. Uses the same mapping as the strokes.
+fn paint_level_grid(
+    p: &egui::Painter,
+    gp: &egui::Painter,
+    gutter: Rect,
+    v: &View,
+    state: &CanvasState,
+) {
+    let r = v.rect;
+    let minor = Stroke::new(1.0, Color32::from_gray(38));
+    let unity = Stroke::new(1.0, Color32::from_gray(96));
+    let step = crate::volume::LEVEL_STEP;
+    let mut level = 0.0;
+    while level <= crate::view::LEVEL_MAX + 1e-9 {
+        let y = v.y_of(level);
+        let is_unity = (level - 100.0).abs() < 1e-9;
+        if state.show_grid {
+            p.line_segment(
+                [Pos2::new(r.left(), y), Pos2::new(r.right(), y)],
+                if is_unity { unity } else { minor },
+            );
+        }
+        // Label inside the gutter; the top label sits just below its line so it
+        // is not cropped at the edge of the window.
+        let label_y = if level >= crate::view::LEVEL_MAX - 1e-9 {
+            y + 10.0
+        } else if level <= 1e-9 {
+            y - 4.0
+        } else {
+            y - 2.0
+        };
+        if label_y >= gutter.top() && label_y <= gutter.bottom() {
+            gp.text(
+                Pos2::new(gutter.right() - 7.0, label_y),
+                egui::Align2::RIGHT_BOTTOM,
+                format!("{level:.0}%"),
+                egui::FontId::monospace(11.0),
+                Color32::from_gray(if is_unity { 215 } else { 150 }),
+            );
+        }
+        level += step;
+    }
 }
 
 fn paint_grid(p: &egui::Painter, gp: &egui::Painter, gutter: Rect, v: &View, state: &CanvasState) {
@@ -1117,6 +1314,10 @@ fn paint_grid(p: &egui::Painter, gp: &egui::Painter, gutter: Rect, v: &View, sta
         }
     }
 
+    if v.mode == crate::view::VerticalMode::Volume {
+        paint_level_grid(p, gp, gutter, v, state);
+        return;
+    }
     // Pitch grid at the Y division (GRID-03). Octaves (C notes in semitone
     // mode) are emphasised and labelled. Finer lines show when they have room.
     let (lo_st, hi_st) = (v.st_of(r.bottom()), v.st_of(r.top()));
@@ -1232,6 +1433,7 @@ mod snap_tests {
                 scale: PitchScale::Semitones,
             },
             a4: 440.0,
+            mode: crate::view::VerticalMode::default(),
         }
     }
 

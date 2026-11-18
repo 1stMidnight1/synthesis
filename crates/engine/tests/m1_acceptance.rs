@@ -391,3 +391,59 @@ fn master_gain_scales_output_and_removes_clipping() {
     assert!(over(&loud) > 0, "70% master clips this scene");
     assert_eq!(over(&quiet), 0, "30% master stays inside full scale");
 }
+
+/// Volume lanes (M4, confirmed 2026-11-18): a new voice sounds at its default
+/// 75% lane; an empty lane is silent; a gap between strokes is silent.
+#[test]
+fn volume_lane_rules_hold_through_render() {
+    use synthesis_engine::{Lane, LanePoint, Stroke};
+    let rms =
+        |x: &[f32]| (x.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+    let line = || {
+        Shape::outline(Geometry::Line {
+            a: Point::new(0.0, st(450.0)),
+            b: Point::new(1.0, st(450.0)),
+        })
+        .unwrap()
+    };
+    let render = |v: Voice| {
+        let mut s = Scene::new(1.0, settings());
+        s.voices.push(v);
+        render_scene(&s).unwrap()
+    };
+    // Mid-tone window (away from the 2 ms ramps).
+    let mid = |out: &Rendered| rms(&out.left[12_000..36_000]);
+
+    // 1. New voice: default 75% on both channels.
+    let mut fresh = Voice::new("fresh");
+    fresh.shapes = vec![line()];
+    let fresh_level = mid(&render(fresh));
+    assert!(
+        (fresh_level - std::f64::consts::FRAC_1_SQRT_2 * 0.75).abs() < 0.01,
+        "default 75%: {fresh_level}"
+    );
+
+    // 2. Empty lanes: silent.
+    let mut empty = Voice::new("empty");
+    empty.shapes = vec![line()];
+    empty.lane_left = Lane::default();
+    empty.lane_right = Lane::default();
+    assert_eq!(mid(&render(empty)), 0.0, "empty lane is silent");
+
+    // 3. A gap between strokes: silent in the gap, sounding in the strokes.
+    let mut gapped = Voice::new("gapped");
+    gapped.shapes = vec![line()];
+    let stroke = |a: f64, b: f64| {
+        Stroke::new(vec![LanePoint::new(a, 100.0), LanePoint::new(b, 100.0)]).unwrap()
+    };
+    gapped.lane_left = Lane {
+        strokes: vec![stroke(0.0, 0.3), stroke(0.7, 1.0)],
+    };
+    let out = render(gapped);
+    let gap = rms(&out.left[(0.4 * 48_000.0) as usize..(0.6 * 48_000.0) as usize]);
+    assert_eq!(gap, 0.0, "gap between strokes is silent");
+    assert!(
+        rms(&out.left[(0.1 * 48_000.0) as usize..(0.2 * 48_000.0) as usize]) > 0.5,
+        "stroke sounds"
+    );
+}

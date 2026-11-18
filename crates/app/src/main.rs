@@ -10,6 +10,7 @@ mod document;
 mod playback;
 mod ruler;
 mod view;
+mod volume;
 
 #[cfg(test)]
 mod ui_tests;
