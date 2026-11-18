@@ -331,6 +331,21 @@ Confirmed by the user: filled shapes are removed from the engine too, as a miles
 
 **Not verified.** Audible difference: outline-only shapes sound different from the old filled ones by design. Whether the simpler rendering sounds right is for the user to hear.
 
+## Live render budget (2026-11-18)
+
+Measured the live path, not the offline one. The app renders 512-frame blocks (10.67 ms at 48 kHz). The parallel voice path only starts at 8192 frames, so live playback renders every voice on the render thread: the threading from M2.5 does not apply to live audio.
+
+Per-block cost, release build, Apple M3, scene of one circle plus one wide line per voice:
+
+| Voices | Per block | Load of 10.67 ms budget |
+|---|---|---|
+| 1 | 0.096 ms | 1% |
+| 2 | 0.097 ms | 1% |
+| 4 | 0.193 ms | 2% |
+| 8 | 0.386 ms | 4% |
+
+Result: the live path has roughly 25x headroom at eight voices. The measurement covers the engine as it is after filled-shape removal. Wide fills were the M2.5 worst case, and they no longer exist; the scene measured here is the current heaviest content (curves and bursts). Real-time playback under load is therefore not the risk PLAN.md feared. Still unmeasured: audio-thread cost of the ring and the device, which is a separate check.
+
 ## Proposed
 
 _None yet._
